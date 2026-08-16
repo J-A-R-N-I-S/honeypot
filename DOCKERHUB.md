@@ -1,48 +1,18 @@
-# Docker Hub — jarnis/honeypot
+# Registry plan
 
-Customers pull without an account:
+**Now:** GitHub Container Registry — `ghcr.io/jarnis/honeypot:latest`  
+Public images on GHCR are free. No Docker Hub org, no paid plan.
 
-    docker pull jarnis/honeypot:latest
+**Later:** optional Docker Hub org `jarnis` (`docker pull jarnis/honeypot:latest`) if we want the shorter name. Not required for customers.
 
-Hermes cannot create the Hub org or push (no Docker daemon here). You do steps 1–3 in the browser, then paste the token here.
+## First publish (needs your GitHub login)
 
-## You (once)
+1. Use the existing GitHub user **Jarnis** (public, 0 repos) or another account you prefer.
+2. Approve the device-login code I print in chat.
+3. I create public repo `honeypot`, push, Actions builds the image.
+4. One-time in the GitHub UI: Package → Package settings → Change visibility → **Public**  
+   (GHCR packages start private; anonymous `docker pull` only works after this click.)
 
-1. Open https://hub.docker.com/signup  
-   Use a company mailbox (`@jarnis.io`), not a private Gmail if you can.
+Customers then:
 
-2. After login: **Organizations → Create Organization**  
-   - Name: **`jarnis`** (must be exactly that — Hub said it is still free)  
-   - Plan: **Free / Community** is enough (public image)
-
-3. In the org: **Repositories → Create repository**  
-   - Name: **`honeypot`**  
-   - Visibility: **Public**  
-   - Short description: `JARNIS capture-only honeypot (SSH, Telnet, HTTP)`
-
-4. Personal settings → **Security → New Access Token**  
-   https://hub.docker.com/settings/security  
-   - Description: `hermes-publish`  
-   - Access: **Read, Write, Delete**  
-   - Copy the token (shown once)
-
-5. Reply in this chat with:
-
-       dockerhub user: <dein-login, nicht die Org>
-       dockerhub token: dckr_pat_…
-       org: jarnis
-       repo: honeypot public
-
-I will store the token only for push, then publish `:latest`.
-
-## After that (I do)
-
-- `docker login` + first `jarnis/honeypot:latest` push (from a builder, or GitHub Actions once the git repo is up)
-- App Install tab already says `jarnis/honeypot:latest`
-- Every later `main` push rebuilds `:latest` automatically
-
-## Pull test (anyone)
-
-    docker pull jarnis/honeypot:latest
-    docker run --rm jarnis/honeypot:latest
-    # expected: fatal about missing HONEYPOT_ID / TOKEN — image works
+    docker pull ghcr.io/jarnis/honeypot:latest
