@@ -13,8 +13,6 @@ services:
       - hp-state:/var/lib/jarnis-honeypot
     environment:
       HONEYPOT_TOKEN: ${HONEYPOT_TOKEN}
-      JARNIS_API: ${JARNIS_API:-https://jarnis.io/api}
-      UPDATE_INTERVAL: ${UPDATE_INTERVAL:-300}
       SSH_CONTAINER_PORT: "22"
       TELNET_CONTAINER_PORT: "23"
       HTTP_CONTAINER_PORT: "80"

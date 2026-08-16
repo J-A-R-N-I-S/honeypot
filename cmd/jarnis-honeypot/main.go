@@ -43,7 +43,7 @@ func main() {
 	token := os.Getenv("HONEYPOT_TOKEN")
 	api := env("JARNIS_API", "https://jarnis.io/api")
 	if token == "" {
-		log.Fatal("HONEYPOT_TOKEN is required (full hpt_… from create/rotate). HONEYPOT_ID is optional — the token already selects the honeypot.")
+		log.Fatal("HONEYPOT_TOKEN is required (full hpt_… from create/rotate). JARNIS_API defaults to https://jarnis.io/api.")
 	}
 	if len(token) < 20 || token == "${HONEYPOT_TOKEN}" {
 		log.Fatal("HONEYPOT_TOKEN looks empty or is still the placeholder — rotate the token in the app and paste the full hpt_… secret")

@@ -30,7 +30,6 @@ Or one shot (values from the Install tab):
 ```bash
 docker run -d --name jarnis-honeypot --restart unless-stopped --memory 128m \
   -e HONEYPOT_TOKEN=hpt_… \
-  -e JARNIS_API=https://jarnis.io/api \
   -p 9022:22 -p 9023:23 -p 9080:80 \
   ghcr.io/j-a-r-n-i-s/honeypot:latest
 ```
@@ -85,7 +84,7 @@ Outbound required: **HTTPS to jarnis.io** (config poll + credential POST).
 
 | Variable | Required | Default |
 |----------|----------|---------|
-| `HONEYPOT_TOKEN` | **yes** | full `hpt_…` secret (selects the honeypot) |
+| `HONEYPOT_TOKEN` | **yes** | full `hpt_…` (only required value) |
 | `JARNIS_API` | no | `https://jarnis.io/api` |
 | `HONEYPOT_ID` | no | filled from config poll if omitted |
 | `UPDATE_INTERVAL` | no | `300` (min 30) |
