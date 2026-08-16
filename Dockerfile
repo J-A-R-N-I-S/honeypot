@@ -9,9 +9,7 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
 
 FROM alpine:3.20
 RUN apk add --no-cache ca-certificates \
-    && mkdir -p /var/lib/jarnis-honeypot \
-    && printf '%s\n' '116.204.196.220 jarnis.io' >> /etc/hosts \
-    && printf '%s\n' 'nameserver 1.1.1.1' 'nameserver 8.8.8.8' 'nameserver 9.9.9.9' > /etc/resolv.conf
+    && mkdir -p /var/lib/jarnis-honeypot
 COPY --from=build /out/jarnis-honeypot /jarnis-honeypot
 RUN chmod 755 /jarnis-honeypot \
     && ln -sf /jarnis-honeypot /usr/local/bin/jarnis-honeypot \
