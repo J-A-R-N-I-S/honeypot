@@ -1,0 +1,7 @@
+/jarnis-honeypot
+/dist/
+.env
+*.exe
+vendor/
+.idea/
+.vscode/

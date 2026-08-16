@@ -1,0 +1,28 @@
+# JARNIS capture-only honeypot — copy values from the app Install tab.
+services:
+  honeypot:
+    image: ghcr.io/jarnis/honeypot:latest
+    build: .
+    restart: unless-stopped
+    mem_limit: 128m
+    cpus: 0.25
+    read_only: true
+    tmpfs:
+      - /tmp
+    volumes:
+      - hp-state:/var/lib/jarnis-honeypot
+    environment:
+      HONEYPOT_ID: ${HONEYPOT_ID}
+      HONEYPOT_TOKEN: ${HONEYPOT_TOKEN}
+      JARNIS_API: ${JARNIS_API:-https://jarnis.io/api}
+      UPDATE_INTERVAL: ${UPDATE_INTERVAL:-300}
+      SSH_CONTAINER_PORT: "22"
+      TELNET_CONTAINER_PORT: "23"
+      HTTP_CONTAINER_PORT: "80"
+    ports:
+      - "${SSH_HOST_PORT:-9022}:22"
+      - "${TELNET_HOST_PORT:-9023}:23"
+      - "${HTTP_HOST_PORT:-9080}:80"
+
+volumes:
+  hp-state:
