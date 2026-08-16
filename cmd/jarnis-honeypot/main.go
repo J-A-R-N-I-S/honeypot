@@ -49,9 +49,9 @@ func main() {
 		log.Fatal("HONEYPOT_TOKEN looks empty or is still the placeholder — rotate the token in the app and paste the full hpt_… secret")
 	}
 
-	sshPort := envInt("SSH_CONTAINER_PORT", 22)
-	telPort := envInt("TELNET_CONTAINER_PORT", 23)
-	httpPort := envInt("HTTP_CONTAINER_PORT", 80)
+	sshPort := envInt("SSH_CONTAINER_PORT", 9022)
+	telPort := envInt("TELNET_CONTAINER_PORT", 9023)
+	httpPort := envInt("HTTP_CONTAINER_PORT", 9080)
 	interval := envInt("UPDATE_INTERVAL", 300)
 	if interval < 30 {
 		interval = 30

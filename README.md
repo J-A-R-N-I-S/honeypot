@@ -30,7 +30,7 @@ Or one shot (values from the Install tab):
 ```bash
 docker run -d --name jarnis-honeypot --restart unless-stopped --memory 128m \
   -e HONEYPOT_TOKEN=hpt_… \
-  -p 9022:22 -p 9023:23 -p 9080:80 \
+  -p 9022:9022 -p 9023:9023 -p 9080:9080 \
   ghcr.io/j-a-r-n-i-s/honeypot:latest
 ```
 
@@ -88,9 +88,9 @@ Outbound required: **HTTPS to jarnis.io** (config poll + credential POST).
 | `JARNIS_API` | no | `https://jarnis.io/api` |
 | `HONEYPOT_ID` | no | filled from config poll if omitted |
 | `UPDATE_INTERVAL` | no | `300` (min 30) |
-| `SSH_CONTAINER_PORT` | no | `22` |
-| `TELNET_CONTAINER_PORT` | no | `23` |
-| `HTTP_CONTAINER_PORT` | no | `80` |
+| `SSH_CONTAINER_PORT` | no | `9022` |
+| `TELNET_CONTAINER_PORT` | no | `9023` |
+| `HTTP_CONTAINER_PORT` | no | `9080` |
 | `SSH_HOST_KEY` | no | `/var/lib/jarnis-honeypot/ssh_host_ecdsa` |
 
 Host publish ports are Docker/firewall mappings, not process env. Changing listen ports needs a container recreate; banners/designs do not.

@@ -14,7 +14,7 @@ RUN apk add --no-cache ca-certificates \
     && adduser -D -H -u 65532 honeypot \
     && mkdir -p /var/lib/jarnis-honeypot
 COPY --from=build /out/jarnis-honeypot /usr/local/bin/jarnis-honeypot
-EXPOSE 22 23 80
+EXPOSE 9022 9023 9080
 # root: must bind privileged ports when the firewall maps 9022->22.
 USER root
 ENTRYPOINT ["/usr/local/bin/jarnis-honeypot"]

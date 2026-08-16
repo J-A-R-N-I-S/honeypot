@@ -13,13 +13,13 @@ services:
       - hp-state:/var/lib/jarnis-honeypot
     environment:
       HONEYPOT_TOKEN: ${HONEYPOT_TOKEN}
-      SSH_CONTAINER_PORT: "22"
-      TELNET_CONTAINER_PORT: "23"
-      HTTP_CONTAINER_PORT: "80"
+      SSH_CONTAINER_PORT: "9022"
+      TELNET_CONTAINER_PORT: "9023"
+      HTTP_CONTAINER_PORT: "9080"
     ports:
-      - "${SSH_HOST_PORT:-9022}:22"
-      - "${TELNET_HOST_PORT:-9023}:23"
-      - "${HTTP_HOST_PORT:-9080}:80"
+      - "${SSH_HOST_PORT:-9022}:9022"
+      - "${TELNET_HOST_PORT:-9023}:9023"
+      - "${HTTP_HOST_PORT:-9080}:9080"
 
 volumes:
   hp-state:
