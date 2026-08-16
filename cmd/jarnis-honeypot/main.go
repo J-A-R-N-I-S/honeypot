@@ -152,7 +152,7 @@ func main() {
 	go func() {
 		s := &sshserv.Server{Addr: ":" + strconv.Itoa(sshPort), KeyPath: keyPath, Banner: bannerSSH, Report: report}
 		if err := s.ListenAndServe(); err != nil {
-			log.Fatalf("ssh: %v", err)
+			log.Fatalf("ssh listen %s: %v (need root to bind :22, or set SSH_CONTAINER_PORT to a high port)", s.Addr, err)
 		}
 	}()
 	go func() {
