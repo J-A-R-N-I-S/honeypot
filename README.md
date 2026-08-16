@@ -30,7 +30,7 @@ Or one shot (values from the Install tab):
 ```bash
 docker run -d --name jarnis-honeypot --restart unless-stopped --memory 128m \
   -e HONEYPOT_TOKEN=hpt_… \
-  -p 9022:9022 -p 9023:9023 -p 9080:9080 \
+  -p 22:22 -p 23:23 -p 80:80 \
   ghcr.io/j-a-r-n-i-s/honeypot:latest
 ```
 
@@ -45,9 +45,7 @@ docker build -t ghcr.io/j-a-r-n-i-s/honeypot:latest .
 ```bash
 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o jarnis-honeypot ./cmd/jarnis-honeypot
 sudo setcap 'cap_net_bind_service=+ep' ./jarnis-honeypot   # optional, for :22/:23/:80
-HONEYPOT_ID=… HONEYPOT_TOKEN=… JARNIS_API=https://jarnis.io/api \
-  SSH_CONTAINER_PORT=9022 TELNET_CONTAINER_PORT=9023 HTTP_CONTAINER_PORT=9080 \
-  ./jarnis-honeypot
+HONEYPOT_TOKEN=… ./jarnis-honeypot
 ```
 
 ### Barracuda CloudGen — Edge Computing
@@ -55,18 +53,15 @@ HONEYPOT_ID=… HONEYPOT_TOKEN=… JARNIS_API=https://jarnis.io/api \
 1. Configuration → Edge Computing (or Secure Connector container engine) → enable Docker
 2. Add container image `ghcr.io/j-a-r-n-i-s/honeypot:latest` (or import the tar)
 3. Environment: paste the Install-tab variables
-4. Publish ports **9022/tcp → 22**, **9023/tcp → 23**, **9080/tcp → 80** (or your host ports)
+4. Publish ports **22 → 22**, **23 → 23**, **80 → 80**
 5. Resources: **128 MB RAM**, 0.25 CPU is enough. No privileged mode. No host network.
-6. Access rule: WAN → this firewall, services TCP 9022 / 9023 / 9080
-7. Destination NAT those ports to the container if Edge Computing does not publish them itself
-
-Keep the default host ports (9022/9023/9080) so the firewall’s own SSH/HTTP stay free.
+6. Access rule: WAN → this firewall, TCP 22 / 23 / 80
 
 ## 3. Check it works
 
 - Sensor log: `config ok` then `sensor up`
-- From another host: `ssh -p 9022 anything@FIREWALL_IP` — login **fails**, dashboard shows the attempt
-- `curl http://FIREWALL_IP:9080` — login page from your Designs tab
+- From another host: `ssh anything@FIREWALL_IP` — login **fails**, dashboard shows the attempt
+- `curl http://FIREWALL_IP/` — login page from your Designs tab
 - Change a banner or design on jarnis.io — within **Config sync interval** (default 5 min) the sensor picks it up. No rebuild.
 
 ## What it does / does not
@@ -88,9 +83,9 @@ Outbound required: **HTTPS to jarnis.io** (config poll + credential POST).
 | `JARNIS_API` | no | `https://jarnis.io/api` |
 | `HONEYPOT_ID` | no | filled from config poll if omitted |
 | `UPDATE_INTERVAL` | no | `300` (min 30) |
-| `SSH_CONTAINER_PORT` | no | `9022` |
-| `TELNET_CONTAINER_PORT` | no | `9023` |
-| `HTTP_CONTAINER_PORT` | no | `9080` |
+| `SSH_CONTAINER_PORT` | no | `22` |
+| `TELNET_CONTAINER_PORT` | no | `23` |
+| `HTTP_CONTAINER_PORT` | no | `80` |
 | `SSH_HOST_KEY` | no | `/var/lib/jarnis-honeypot/ssh_host_ecdsa` |
 
 Host publish ports are Docker/firewall mappings, not process env. Changing listen ports needs a container recreate; banners/designs do not.
