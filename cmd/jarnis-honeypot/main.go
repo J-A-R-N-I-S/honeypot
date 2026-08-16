@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -40,13 +41,20 @@ func main() {
 	log.SetPrefix("jarnis-hp ")
 
 	hpID := os.Getenv("HONEYPOT_ID")
-	token := os.Getenv("HONEYPOT_TOKEN")
+	token := strings.TrimSpace(os.Getenv("HONEYPOT_TOKEN"))
+	token = strings.Trim(token, `"'`)
 	api := env("JARNIS_API", "https://jarnis.io/api")
-	if token == "" {
-		log.Fatal("HONEYPOT_TOKEN is required (full hpt_… from create/rotate). JARNIS_API defaults to https://jarnis.io/api.")
-	}
-	if len(token) < 20 || token == "${HONEYPOT_TOKEN}" {
-		log.Fatal("HONEYPOT_TOKEN looks empty or is still the placeholder — rotate the token in the app and paste the full hpt_… secret")
+	if token == "" || len(token) < 20 || token == "${HONEYPOT_TOKEN}" {
+		log.Printf("HONEYPOT_TOKEN missing or placeholder — waiting (set env HONEYPOT_TOKEN, do not use start command)")
+		for {
+			time.Sleep(15 * time.Second)
+			token = strings.Trim(strings.TrimSpace(os.Getenv("HONEYPOT_TOKEN")), `"'`)
+			if token != "" && len(token) >= 20 && token != "${HONEYPOT_TOKEN}" {
+				log.Printf("token appeared, continuing")
+				break
+			}
+			log.Printf("still waiting for HONEYPOT_TOKEN")
+		}
 	}
 
 	sshPort := envInt("SSH_CONTAINER_PORT", 9022)
