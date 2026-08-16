@@ -2,7 +2,7 @@
 
 Capture-only SSH, Telnet and HTTP. Attackers **cannot** get a shell or a web session. Usernames, passwords and source IPs are sent to your JARNIS dashboard.
 
-Image target (later): `ghcr.io/jarnis/honeypot:latest`  
+Public image: `jarnis/honeypot:latest` (Docker Hub)  
 Typical size: ~8–10 MB (static Go, no OS). Fits Barracuda CloudGen Edge Computing.
 
 ## 1. In the JARNIS app
@@ -34,13 +34,13 @@ docker run -d --name jarnis-honeypot --restart unless-stopped --memory 128m \
   -e JARNIS_API=https://jarnis.io/api \
   -e UPDATE_INTERVAL=300 \
   -p 9022:22 -p 9023:23 -p 9080:80 \
-  ghcr.io/jarnis/honeypot:latest
+  jarnis/honeypot:latest
 ```
 
-Until the image is on GHCR, build locally:
+Until Hub is live, build locally:
 
 ```bash
-docker build -t ghcr.io/jarnis/honeypot:latest .
+docker build -t jarnis/honeypot:latest .
 ```
 
 ### Binary (no Docker)
@@ -56,7 +56,7 @@ HONEYPOT_ID=… HONEYPOT_TOKEN=… JARNIS_API=https://jarnis.io/api \
 ### Barracuda CloudGen — Edge Computing
 
 1. Configuration → Edge Computing (or Secure Connector container engine) → enable Docker
-2. Add container image `ghcr.io/jarnis/honeypot:latest` (or import the tar)
+2. Add container image `jarnis/honeypot:latest` (or import the tar)
 3. Environment: paste the Install-tab variables
 4. Publish ports **9022/tcp → 22**, **9023/tcp → 23**, **9080/tcp → 80** (or your host ports)
 5. Resources: **128 MB RAM**, 0.25 CPU is enough. No privileged mode. No host network.
@@ -98,6 +98,12 @@ Outbound required: **HTTPS to jarnis.io** (config poll + credential POST).
 
 Host publish ports are Docker/firewall mappings, not process env. Changing listen ports needs a container recreate; banners/designs do not.
 
-## GitHub (when you are ready)
+## Docker Hub
 
-Repo is local at `/root/jarnis-honeypot`. Workflow `.github/workflows/image.yml` builds `ghcr.io/jarnis/honeypot`. Do not push until the org/repo exists.
+Customers pull **without login**:
+
+```bash
+docker pull jarnis/honeypot:latest
+```
+
+CI (`.github/workflows/image.yml`) rebuilds `:latest` on every `main` push. Needs Hub org `jarnis` + secrets `DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN`. See `DOCKERHUB.md`.
