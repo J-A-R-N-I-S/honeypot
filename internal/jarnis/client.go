@@ -2,12 +2,16 @@ package jarnis
 
 import (
 	"bytes"
+	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 )
@@ -95,12 +99,41 @@ func NormalizeAPI(raw string) string {
 }
 
 func New(api, honeypotID, token string) *Client {
+	base := NormalizeAPI(api)
+	pin := strings.TrimSpace(os.Getenv("JARNIS_API_IP"))
+	if pin == "" {
+		pin = "116.204.196.220" // temporary: skip DNS
+	}
+	u, _ := url.Parse(base)
+	sni := "jarnis.io"
+	if u != nil && u.Hostname() != "" && net.ParseIP(u.Hostname()) == nil {
+		sni = u.Hostname()
+	}
+	log.Printf("api %s pin %s sni %s", base, pin, sni)
+	tr := &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			host, port, err := net.SplitHostPort(addr)
+			if err != nil || port == "" {
+				host, port = addr, "443"
+			}
+			if host == "jarnis.io" || host == sni {
+				host = pin
+			}
+			d := net.Dialer{Timeout: 10 * time.Second}
+			return d.DialContext(ctx, "tcp", net.JoinHostPort(host, port))
+		},
+		TLSClientConfig:     &tls.Config{ServerName: sni, MinVersion: tls.VersionTLS12},
+		ForceAttemptHTTP2:   true,
+		TLSHandshakeTimeout: 10 * time.Second,
+	}
 	return &Client{
-		API:        NormalizeAPI(api),
+		API:        base,
 		HoneypotID: honeypotID,
 		Token:      token,
 		HTTP: &http.Client{
-			Timeout: 20 * time.Second,
+			Timeout:   20 * time.Second,
+			Transport: tr,
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
 				if len(via) >= 3 {
 					return fmt.Errorf("too many redirects")
