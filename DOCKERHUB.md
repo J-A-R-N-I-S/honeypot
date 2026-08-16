@@ -1,7 +1,7 @@
 # Registry plan
 
-**Now:** GitHub Container Registry — `ghcr.io/jarnis/honeypot:latest`  
-Public images on GHCR are free. No Docker Hub org, no paid plan.
+**Now:** GitHub Container Registry — `ghcr.io/j-a-r-n-i-s/honeypot:latest`  
+Org: https://github.com/J-A-R-N-I-S (0 public repos). Public GHCR is free.
 
 **Later:** optional Docker Hub org `jarnis` (`docker pull jarnis/honeypot:latest`) if we want the shorter name. Not required for customers.
 
