@@ -16,7 +16,7 @@ services:
     ports:
       - "${SSH_HOST_PORT:-22}:22"
       - "${TELNET_HOST_PORT:-23}:23"
-      - "${HTTP_HOST_PORT:-80}:80"
+      - "${HTTP_HOST_PORT:-8080}:8080"
 
 volumes:
   hp-state:

@@ -30,7 +30,7 @@ Or one shot (values from the Install tab):
 ```bash
 docker run -d --name jarnis-honeypot --restart unless-stopped --memory 128m \
   -e HONEYPOT_TOKEN=hpt_… \
-  -p 22:22 -p 23:23 -p 80:80 \
+  -p 22:22 -p 23:23 -p 8080:8080 \
   ghcr.io/j-a-r-n-i-s/honeypot:latest
 ```
 
@@ -44,7 +44,7 @@ docker build -t ghcr.io/j-a-r-n-i-s/honeypot:latest .
 
 ```bash
 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o jarnis-honeypot ./cmd/jarnis-honeypot
-sudo setcap 'cap_net_bind_service=+ep' ./jarnis-honeypot   # optional, for :22/:23/:80
+sudo setcap 'cap_net_bind_service=+ep' ./jarnis-honeypot   # optional, for :22/:23
 HONEYPOT_TOKEN=… ./jarnis-honeypot
 ```
 
@@ -53,22 +53,22 @@ HONEYPOT_TOKEN=… ./jarnis-honeypot
 1. Configuration → Edge Computing (or Secure Connector container engine) → enable Docker
 2. Add container image `ghcr.io/j-a-r-n-i-s/honeypot:latest` (or import the tar)
 3. Environment: paste the Install-tab variables
-4. Publish ports **22 → 22**, **23 → 23**, **80 → 80**
+4. Publish ports **22 → 22**, **23 → 23**, **8080 → 8080**
 5. Resources: **128 MB RAM**, 0.25 CPU is enough. No privileged mode. No host network.
-6. Access rule: WAN → this firewall, TCP 22 / 23 / 80
+6. Access rule: WAN → this firewall, TCP 22 / 23 / 8080
 
 ## 3. Check it works
 
 - Sensor log: `config ok` then `sensor up`
 - From another host: `ssh anything@FIREWALL_IP` — login **fails**, dashboard shows the attempt
-- `curl http://FIREWALL_IP/` — login page from your Designs tab
+- `curl http://FIREWALL_IP:8080/` — login page from your Designs tab
 - Change a banner or design on jarnis.io — within **Config sync interval** (default 5 min) the sensor picks it up. No rebuild.
 
 ## What it does / does not
 
 | Does | Does not |
 |------|----------|
-| Fake SSH / Telnet / HTTP :80 | Grant a shell, TTY, or cookie session |
+| Fake SSH / Telnet / HTTP :8080 | Grant a shell, TTY, or cookie session |
 | Backhaul user, password, IP, UA | Store loot on the firewall |
 | Poll banners + HTML designs | Run attacker commands or download payloads |
 | Queue events if JARNIS is briefly down | Need a public inbound path to JARNIS except HTTPS out |
@@ -85,7 +85,7 @@ Outbound required: **HTTPS to jarnis.io** (config poll + credential POST).
 | `UPDATE_INTERVAL` | no | `300` (min 30) |
 | `SSH_CONTAINER_PORT` | no | `22` |
 | `TELNET_CONTAINER_PORT` | no | `23` |
-| `HTTP_CONTAINER_PORT` | no | `80` |
+| `HTTP_CONTAINER_PORT` | no | `8080` |
 | `SSH_HOST_KEY` | no | `/var/lib/jarnis-honeypot/ssh_host_ecdsa` |
 
 Host publish ports are Docker/firewall mappings, not process env. Changing listen ports needs a container recreate; banners/designs do not.

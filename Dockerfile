@@ -15,7 +15,7 @@ RUN chmod 755 /jarnis-honeypot \
     && ln -sf /jarnis-honeypot /usr/local/bin/jarnis-honeypot \
     && printf '%s\n' '#!/bin/sh' 'exec /jarnis-honeypot "$@"' > /start.sh \
     && chmod 755 /start.sh
-EXPOSE 22 23 80
+EXPOSE 22 23 8080
 USER root
 # Barracuda: leave start command empty, or set /start.sh or /jarnis-honeypot
 ENTRYPOINT ["/jarnis-honeypot"]
