@@ -42,8 +42,8 @@ func main() {
 	hpID := os.Getenv("HONEYPOT_ID")
 	token := os.Getenv("HONEYPOT_TOKEN")
 	api := env("JARNIS_API", "https://jarnis.io/api")
-	if hpID == "" || token == "" {
-		log.Fatal("HONEYPOT_ID and HONEYPOT_TOKEN are required (copy from jarnis.io → Honeypots → Installation after create/rotate)")
+	if token == "" {
+		log.Fatal("HONEYPOT_TOKEN is required (full hpt_… from create/rotate). HONEYPOT_ID is optional — the token already selects the honeypot.")
 	}
 	if len(token) < 20 || token == "${HONEYPOT_TOKEN}" {
 		log.Fatal("HONEYPOT_TOKEN looks empty or is still the placeholder — rotate the token in the app and paste the full hpt_… secret")
@@ -73,6 +73,9 @@ func main() {
 		live = *cfg
 		if cfg.UpdateIntervalSeconds >= 30 {
 			interval = cfg.UpdateIntervalSeconds
+		}
+		if cfg.HoneypotID != "" {
+			cli.HoneypotID = cfg.HoneypotID
 		}
 	}
 	bannerSSH := func() string {
@@ -165,7 +168,7 @@ func main() {
 		}
 	}()
 
-	log.Printf("sensor up id=%s api=%s ports ssh=:%d telnet=:%d http=:%d", hpID, cli.API, sshPort, telPort, httpPort)
+	log.Printf("sensor up id=%s api=%s ports ssh=:%d telnet=:%d http=:%d", cli.HoneypotID, cli.API, sshPort, telPort, httpPort)
 	log.Printf("no interactive login is possible — credentials are captured and sent to JARNIS only")
 
 	sig := make(chan os.Signal, 1)

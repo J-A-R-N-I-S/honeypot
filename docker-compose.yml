@@ -12,7 +12,6 @@ services:
     volumes:
       - hp-state:/var/lib/jarnis-honeypot
     environment:
-      HONEYPOT_ID: ${HONEYPOT_ID}
       HONEYPOT_TOKEN: ${HONEYPOT_TOKEN}
       JARNIS_API: ${JARNIS_API:-https://jarnis.io/api}
       UPDATE_INTERVAL: ${UPDATE_INTERVAL:-300}
