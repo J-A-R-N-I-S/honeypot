@@ -42,17 +42,6 @@ cp examples/env.example .env   # set HONEYPOT_TOKEN
 docker compose up -d
 ```
 
-### Barracuda CloudGen Edge
-
-1. Edge Computing → add image `ghcr.io/j-a-r-n-i-s/honeypot:latest` (force-pull after updates).
-2. Start command: **empty**.
-3. Environment: `HONEYPOT_TOKEN` = the `hpt_…` secret (no quotes).
-4. Publish **22→22**, **23→23**, **8080→8080**.
-5. Access-Rule: WAN TCP 22, 23, 8080.
-6. Outbound: HTTPS to `jarnis.io` (TCP 443). DNS is optional — the sensor dials a pinned API address.
-
-128 MB RAM is enough. Do not run privileged.
-
 ### Binary (no Docker)
 
 ```bash

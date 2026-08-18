@@ -17,6 +17,6 @@ RUN chmod 755 /jarnis-honeypot \
     && chmod 755 /start.sh
 EXPOSE 22 23 8080
 USER root
-# Barracuda: leave start command empty, or set /start.sh or /jarnis-honeypot
+# start command empty, or /start.sh / /jarnis-honeypot
 ENTRYPOINT ["/jarnis-honeypot"]
 CMD []
