@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jarnis/honeypot/internal/jarnis"
-	"github.com/jarnis/honeypot/internal/queue"
+	"github.com/j-a-r-n-i-s/honeypot/internal/jarnis"
+	"github.com/j-a-r-n-i-s/honeypot/internal/queue"
 )
 
 func TestLoginNeverGrantsSession(t *testing.T) {

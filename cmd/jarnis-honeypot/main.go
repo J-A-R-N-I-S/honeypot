@@ -10,11 +10,11 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jarnis/honeypot/internal/httpserv"
-	"github.com/jarnis/honeypot/internal/jarnis"
-	"github.com/jarnis/honeypot/internal/queue"
-	"github.com/jarnis/honeypot/internal/sshserv"
-	"github.com/jarnis/honeypot/internal/telserv"
+	"github.com/j-a-r-n-i-s/honeypot/internal/httpserv"
+	"github.com/j-a-r-n-i-s/honeypot/internal/jarnis"
+	"github.com/j-a-r-n-i-s/honeypot/internal/queue"
+	"github.com/j-a-r-n-i-s/honeypot/internal/sshserv"
+	"github.com/j-a-r-n-i-s/honeypot/internal/telserv"
 )
 
 func env(k, def string) string {

@@ -14,8 +14,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jarnis/honeypot/internal/jarnis"
-	"github.com/jarnis/honeypot/internal/queue"
+	"github.com/j-a-r-n-i-s/honeypot/internal/jarnis"
+	"github.com/j-a-r-n-i-s/honeypot/internal/queue"
 	"golang.org/x/crypto/ssh"
 )
 

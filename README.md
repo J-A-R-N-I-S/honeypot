@@ -1,31 +1,14 @@
-# JARNIS honeypot sensor
+# JARNIS honeypot
 
-Capture-only SSH, Telnet and HTTP. Attackers **cannot** get a shell or a web session. Usernames, passwords and source IPs are sent to your JARNIS dashboard.
+Capture-only SSH, Telnet and HTTP sensor. Attackers never get a shell or a web session. Usernames, passwords and source IPs go to the [JARNIS](https://jarnis.io) dashboard over HTTPS.
 
-Public image: `ghcr.io/j-a-r-n-i-s/honeypot:latest` (GitHub Container Registry, free)  
-Typical size: ~8–10 MB (static Go, no OS). Fits Barracuda CloudGen Edge Computing.
+Image: [`ghcr.io/j-a-r-n-i-s/honeypot:latest`](https://github.com/orgs/J-A-R-N-I-S/packages/container/package/honeypot) (~8 MB, linux/amd64). Fits Barracuda CloudGen Edge (128 MB, not privileged).
 
-## 1. In the JARNIS app
+## Deploy
 
-1. Sign in at https://jarnis.io → **Honeypots**
-2. Register a honeypot (name + public IP/DNS of the firewall)
-3. **Save the API token once** (create or rotate). It starts with `hpt_` and is shown only once.
-4. Open **Configure → Banners / Designs** and set what the sensor should show
-5. Open **Installation** and copy the env values
-
-The token placeholder `${HONEYPOT_TOKEN}` is **not** a real token. Rotate if you lost it.
-
-## 2. Deploy (few clicks)
-
-### Docker / compose
-
-```bash
-cp examples/env.example .env
-# edit .env — paste HONEYPOT_ID + HONEYPOT_TOKEN + JARNIS_API
-docker compose up -d
-```
-
-Or one shot (values from the Install tab):
+1. In https://jarnis.io → **Honeypots** register a sensor and **copy the `hpt_…` token once** (create or rotate).
+2. Set banners and HTTP designs under Configure.
+3. Start the container — only the token is required:
 
 ```bash
 docker run -d --name jarnis-honeypot --restart unless-stopped --memory 128m \
@@ -34,68 +17,52 @@ docker run -d --name jarnis-honeypot --restart unless-stopped --memory 128m \
   ghcr.io/j-a-r-n-i-s/honeypot:latest
 ```
 
-Until the package is public, build locally:
+Or `cp examples/env.example .env` and `docker compose up -d`.
 
-```bash
-docker build -t ghcr.io/j-a-r-n-i-s/honeypot:latest .
-```
+### Barracuda CloudGen Edge
 
-### Binary (no Docker)
+Leave the start command empty (image entrypoint `/jarnis-honeypot`). Environment: `HONEYPOT_TOKEN` only. Publish **22→22, 23→23, 8080→8080**. Access-Rule WAN TCP 22 / 23 / 8080. Outbound HTTPS to `jarnis.io` (TCP 443).
 
-```bash
-GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o jarnis-honeypot ./cmd/jarnis-honeypot
-sudo setcap 'cap_net_bind_service=+ep' ./jarnis-honeypot   # optional, for :22/:23
-HONEYPOT_TOKEN=… ./jarnis-honeypot
-```
+## Check
 
-### Barracuda CloudGen — Edge Computing
+- Log: `config ok` then `sensor up`
+- `ssh user@FIREWALL_IP` — login fails, dashboard shows the attempt
+- `curl http://FIREWALL_IP:8080/` — login page from Designs
+- Banner/design changes apply on the next config poll (default 5 min). Port changes need a recreate.
 
-1. Configuration → Edge Computing (or Secure Connector container engine) → enable Docker
-2. Add container image `ghcr.io/j-a-r-n-i-s/honeypot:latest` (or import the tar)
-3. Environment: paste the Install-tab variables
-4. Publish ports **22 → 22**, **23 → 23**, **8080 → 8080**
-5. Resources: **128 MB RAM**, 0.25 CPU is enough. No privileged mode. No host network.
-6. Access rule: WAN → this firewall, TCP 22 / 23 / 8080
-
-## 3. Check it works
-
-- Sensor log: `config ok` then `sensor up`
-- From another host: `ssh anything@FIREWALL_IP` — login **fails**, dashboard shows the attempt
-- `curl http://FIREWALL_IP:8080/` — login page from your Designs tab
-- Change a banner or design on jarnis.io — within **Config sync interval** (default 5 min) the sensor picks it up. No rebuild.
-
-## What it does / does not
-
-| Does | Does not |
-|------|----------|
-| Fake SSH / Telnet / HTTP :8080 | Grant a shell, TTY, or cookie session |
-| Backhaul user, password, IP, UA | Store loot on the firewall |
-| Poll banners + HTML designs | Run attacker commands or download payloads |
-| Queue events if JARNIS is briefly down | Need a public inbound path to JARNIS except HTTPS out |
-
-Outbound required: **HTTPS to jarnis.io** (config poll + credential POST).
-
-## Env
+## Environment
 
 | Variable | Required | Default |
 |----------|----------|---------|
-| `HONEYPOT_TOKEN` | **yes** | full `hpt_…` (only required value) |
+| `HONEYPOT_TOKEN` | **yes** | full `hpt_…` from create/rotate |
 | `JARNIS_API` | no | `https://jarnis.io/api` |
-| `HONEYPOT_ID` | no | filled from config poll if omitted |
-| `UPDATE_INTERVAL` | no | `300` (min 30) |
+| `HONEYPOT_ID` | no | learned from the first config poll |
+| `UPDATE_INTERVAL` | no | `300` (minimum 30) |
 | `SSH_CONTAINER_PORT` | no | `22` |
 | `TELNET_CONTAINER_PORT` | no | `23` |
 | `HTTP_CONTAINER_PORT` | no | `8080` |
 | `SSH_HOST_KEY` | no | `/var/lib/jarnis-honeypot/ssh_host_ecdsa` |
+| `JARNIS_API_IP` | no | `116.204.196.220` (TLS name stays `jarnis.io`) |
 
-Host publish ports are Docker/firewall mappings, not process env. Changing listen ports needs a container recreate; banners/designs do not.
+`${HONEYPOT_TOKEN}` in the Install tab is a placeholder, not a secret.
 
-## Container registry
+## Behaviour
 
-Customers pull **without login** once the GHCR package is set to Public:
+| Does | Does not |
+|------|----------|
+| Fake SSH / Telnet / HTTP :8080 | Grant a shell, TTY, or cookie |
+| HTTPS backhaul of user, password, IP, UA | Store loot on the firewall |
+| Poll banners and HTML designs | Run attacker commands |
+
+## Develop
 
 ```bash
-docker pull ghcr.io/j-a-r-n-i-s/honeypot:latest
+go test ./...
+go build -o dist/jarnis-honeypot ./cmd/jarnis-honeypot
 ```
 
-CI (`.github/workflows/image.yml`) rebuilds `:latest` on every `main` push. Docker Hub can wait. See `DOCKERHUB.md`.
+CI on `main` runs tests and publishes `:latest` plus the short commit SHA to GHCR.
+
+## License
+
+MIT — see `LICENSE`.

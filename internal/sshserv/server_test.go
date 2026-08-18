@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jarnis/honeypot/internal/queue"
+	"github.com/j-a-r-n-i-s/honeypot/internal/queue"
 	"golang.org/x/crypto/ssh"
 )
 

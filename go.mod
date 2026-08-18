@@ -1,4 +1,4 @@
-module github.com/jarnis/honeypot
+module github.com/j-a-r-n-i-s/honeypot
 
 go 1.23.0
 

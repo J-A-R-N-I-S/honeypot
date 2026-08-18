@@ -11,8 +11,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/jarnis/honeypot/internal/jarnis"
-	"github.com/jarnis/honeypot/internal/queue"
+	"github.com/j-a-r-n-i-s/honeypot/internal/jarnis"
+	"github.com/j-a-r-n-i-s/honeypot/internal/queue"
 )
 
 type Server struct {
