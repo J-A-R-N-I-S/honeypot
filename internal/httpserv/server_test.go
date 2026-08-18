@@ -40,22 +40,29 @@ func TestLoginNeverGrantsSession(t *testing.T) {
 	}
 }
 
+func TestIgnoresForwardedFor(t *testing.T) {
+	var got queue.Event
+	s := &Server{Report: func(ev queue.Event) { got = ev }}
+	form := url.Values{"username": {"x"}, "password": {"y"}}
+	req := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("X-Forwarded-For", "1.2.3.4")
+	req.RemoteAddr = "203.0.113.9:5555"
+	s.handle(httptest.NewRecorder(), req)
+	if got.SourceIP != "203.0.113.9" {
+		t.Fatalf("xff must be ignored, got %q", got.SourceIP)
+	}
+}
+
 func TestHealthzSilent(t *testing.T) {
 	called := false
-	_ = &Server{Report: func(queue.Event) { called = true }}
-	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(200)
-		_, _ = w.Write([]byte("ok\n"))
-	})
+	s := &Server{Report: func(queue.Event) { called = true }}
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	req.RemoteAddr = "203.0.113.9:1"
 	rr := httptest.NewRecorder()
-	mux.ServeHTTP(rr, req)
+	s.handle(rr, req)
 	if called {
-		t.Fatal("healthz must not report")
-	}
-	if rr.Body.String() != "ok\n" {
-		t.Fatalf("body %q", rr.Body.String())
+		t.Fatal("GET /healthz must not report a login")
 	}
 }
 

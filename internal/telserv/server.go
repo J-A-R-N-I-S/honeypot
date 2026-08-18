@@ -39,12 +39,21 @@ func (s *Server) ListenAndServe() error {
 	s.listener = ln
 	s.mu.Unlock()
 	log.Printf("telnet listen %s (auth always denied)", s.Addr)
+	sem := make(chan struct{}, 64)
 	for {
 		c, err := ln.Accept()
 		if err != nil {
 			return err
 		}
-		go s.handle(c)
+		select {
+		case sem <- struct{}{}:
+			go func(c net.Conn) {
+				defer func() { <-sem }()
+				s.handle(c)
+			}(c)
+		default:
+			_ = c.Close()
+		}
 	}
 }
 

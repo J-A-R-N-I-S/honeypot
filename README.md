@@ -1,14 +1,14 @@
 # JARNIS honeypot
+#
+# Capture-only SSH, Telnet and HTTP. Attackers never get a shell or a cookie.
+# Credentials go to https://jarnis.io over HTTPS.
+#
+#     docker pull ghcr.io/j-a-r-n-i-s/honeypot:latest
 
-Capture-only SSH, Telnet and HTTP sensor. Attackers never get a shell or a web session. Usernames, passwords and source IPs go to the [JARNIS](https://jarnis.io) dashboard over HTTPS.
+## Quick start
 
-Image: [`ghcr.io/j-a-r-n-i-s/honeypot:latest`](https://github.com/orgs/J-A-R-N-I-S/packages/container/package/honeypot) (~8 MB, linux/amd64). Fits Barracuda CloudGen Edge (128 MB, not privileged).
-
-## Deploy
-
-1. In https://jarnis.io → **Honeypots** register a sensor and **copy the `hpt_…` token once** (create or rotate).
-2. Set banners and HTTP designs under Configure.
-3. Start the container — only the token is required:
+1. In [jarnis.io](https://jarnis.io) → **Honeypots** create a sensor and copy the `hpt_…` token **once**.
+2. Run:
 
 ```bash
 docker run -d --name jarnis-honeypot --restart unless-stopped --memory 128m \
@@ -17,52 +17,74 @@ docker run -d --name jarnis-honeypot --restart unless-stopped --memory 128m \
   ghcr.io/j-a-r-n-i-s/honeypot:latest
 ```
 
-Or `cp examples/env.example .env` and `docker compose up -d`.
+3. Check: `ssh user@HOST` fails, `curl http://HOST:8080/` shows the login page, the attempt appears on the dashboard.
+
+Only **one** environment variable is required.
+
+## Install guides
+
+### Docker
+
+```bash
+docker pull ghcr.io/j-a-r-n-i-s/honeypot:latest
+docker run -d --name jarnis-honeypot --restart unless-stopped --memory 128m \
+  -e HONEYPOT_TOKEN=hpt_… \
+  -p 22:22 -p 23:23 -p 8080:8080 \
+  ghcr.io/j-a-r-n-i-s/honeypot:latest
+```
+
+Leave the start command empty. The image entrypoint is `/jarnis-honeypot`.
+
+### Docker Compose
+
+```bash
+cp examples/env.example .env   # set HONEYPOT_TOKEN
+docker compose up -d
+```
 
 ### Barracuda CloudGen Edge
 
-Leave the start command empty (image entrypoint `/jarnis-honeypot`). Environment: `HONEYPOT_TOKEN` only. Publish **22→22, 23→23, 8080→8080**. Access-Rule WAN TCP 22 / 23 / 8080. Outbound HTTPS to `jarnis.io` (TCP 443).
+1. Edge Computing → add image `ghcr.io/j-a-r-n-i-s/honeypot:latest` (force-pull after updates).
+2. Start command: **empty**.
+3. Environment: `HONEYPOT_TOKEN` = the `hpt_…` secret (no quotes).
+4. Publish **22→22**, **23→23**, **8080→8080**.
+5. Access-Rule: WAN TCP 22, 23, 8080.
+6. Outbound: HTTPS to `jarnis.io` (TCP 443). DNS is optional — the sensor dials a pinned API address.
 
-## Check
+128 MB RAM is enough. Do not run privileged.
 
-- Log: `config ok` then `sensor up`
-- `ssh user@FIREWALL_IP` — login fails, dashboard shows the attempt
-- `curl http://FIREWALL_IP:8080/` — login page from Designs
-- Banner/design changes apply on the next config poll (default 5 min). Port changes need a recreate.
+### Binary (no Docker)
+
+```bash
+go build -o jarnis-honeypot ./cmd/jarnis-honeypot
+HONEYPOT_TOKEN=hpt_… ./jarnis-honeypot
+```
+
+Needs bind rights for :22 / :23 (root or `cap_net_bind_service`).
 
 ## Environment
 
 | Variable | Required | Default |
 |----------|----------|---------|
 | `HONEYPOT_TOKEN` | **yes** | full `hpt_…` from create/rotate |
-| `JARNIS_API` | no | `https://jarnis.io/api` |
-| `HONEYPOT_ID` | no | learned from the first config poll |
-| `UPDATE_INTERVAL` | no | `300` (minimum 30) |
 | `SSH_CONTAINER_PORT` | no | `22` |
 | `TELNET_CONTAINER_PORT` | no | `23` |
 | `HTTP_CONTAINER_PORT` | no | `8080` |
-| `SSH_HOST_KEY` | no | `/var/lib/jarnis-honeypot/ssh_host_ecdsa` |
-| `JARNIS_API_IP` | no | `116.204.196.220` (TLS name stays `jarnis.io`) |
 
-`${HONEYPOT_TOKEN}` in the Install tab is a placeholder, not a secret.
+`${HONEYPOT_TOKEN}` in the app is a placeholder, not a secret. API, ID and poll interval come from JARNIS — do not set them on the container.
 
-## Behaviour
+Port changes need a recreate. Banner and design changes apply on the next poll (default 5 minutes).
 
-| Does | Does not |
-|------|----------|
-| Fake SSH / Telnet / HTTP :8080 | Grant a shell, TTY, or cookie |
-| HTTPS backhaul of user, password, IP, UA | Store loot on the firewall |
-| Poll banners and HTML designs | Run attacker commands |
+## Security
 
-## Develop
+- Password and public-key auth are **always denied**. No shell, no TTY, no HTTP cookie.
+- Captured credentials are sent to JARNIS over TLS only. They are not written to stdout.
+- Source IP is the TCP peer — `X-Forwarded-For` is ignored.
+- At most 64 concurrent SSH/Telnet sessions; extra connections are dropped.
+- Control-plane client follows **no** HTTP redirects and uses no HTTP proxy.
 
-```bash
-go test ./...
-go build -o dist/jarnis-honeypot ./cmd/jarnis-honeypot
-```
-
-CI on `main` runs tests and publishes `:latest` plus the short commit SHA to GHCR.
+Report issues via GitHub Security Advisories on this repository.
 
 ## License
 
-MIT — see `LICENSE`.
+MIT — see [LICENSE](LICENSE).

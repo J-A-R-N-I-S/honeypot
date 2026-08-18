@@ -11,7 +11,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os"
 	"strings"
 	"time"
 )
@@ -100,24 +99,20 @@ func NormalizeAPI(raw string) string {
 
 func New(api, honeypotID, token string) *Client {
 	base := NormalizeAPI(api)
-	pin := strings.TrimSpace(os.Getenv("JARNIS_API_IP"))
-	if pin == "" {
-		pin = "116.204.196.220" // temporary: skip DNS
-	}
+	pin := "116.204.196.220"
 	u, _ := url.Parse(base)
 	sni := "jarnis.io"
 	if u != nil && u.Hostname() != "" && net.ParseIP(u.Hostname()) == nil {
 		sni = u.Hostname()
 	}
-	log.Printf("api %s pin %s sni %s", base, pin, sni)
 	tr := &http.Transport{
-		Proxy: http.ProxyFromEnvironment,
+		Proxy: nil,
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			host, port, err := net.SplitHostPort(addr)
 			if err != nil || port == "" {
 				host, port = addr, "443"
 			}
-			if host == "jarnis.io" || host == sni {
+			if host == "jarnis.io" {
 				host = pin
 			}
 			d := net.Dialer{Timeout: 10 * time.Second}
@@ -134,11 +129,8 @@ func New(api, honeypotID, token string) *Client {
 		HTTP: &http.Client{
 			Timeout:   20 * time.Second,
 			Transport: tr,
-			CheckRedirect: func(req *http.Request, via []*http.Request) error {
-				if len(via) >= 3 {
-					return fmt.Errorf("too many redirects")
-				}
-				return nil
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return fmt.Errorf("redirects disabled")
 			},
 		},
 	}
@@ -164,7 +156,7 @@ func (c *Client) FetchConfig() (*Config, error) {
 		return nil, err
 	}
 	defer res.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(res.Body, 8<<20))
+	body, _ := io.ReadAll(io.LimitReader(res.Body, 2<<20))
 	if res.StatusCode != 200 {
 		return nil, fmt.Errorf("config %d: %s", res.StatusCode, clip(body, 200))
 	}

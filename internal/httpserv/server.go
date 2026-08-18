@@ -26,10 +26,6 @@ type Server struct {
 
 func (s *Server) ListenAndServe() error {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/plain")
-		_, _ = io.WriteString(w, "ok\n")
-	})
 	mux.HandleFunc("/", s.handle)
 	s.server = &http.Server{
 		Addr:              s.Addr,
@@ -57,9 +53,6 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	src := hostOnly(r.RemoteAddr)
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		src = strings.TrimSpace(strings.Split(xff, ",")[0])
-	}
 
 	user, pass := extractCreds(r)
 	if r.Method == http.MethodPost || user != "" || pass != "" {
@@ -98,10 +91,8 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 
 func extractCreds(r *http.Request) (user, pass string) {
 	if r.Method == http.MethodPost {
+		r.Body = http.MaxBytesReader(nil, r.Body, 32<<10)
 		_ = r.ParseForm()
-		if r.ContentLength > 1<<20 {
-			return "", ""
-		}
 	}
 	form := r.Form
 	if form == nil {

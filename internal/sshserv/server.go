@@ -42,12 +42,21 @@ func (s *Server) ListenAndServe() error {
 	s.mu.Unlock()
 	log.Printf("ssh listen %s (auth always denied)", s.Addr)
 
+	sem := make(chan struct{}, 64)
 	for {
 		c, err := ln.Accept()
 		if err != nil {
 			return err
 		}
-		go s.handle(c, signer)
+		select {
+		case sem <- struct{}{}:
+			go func(c net.Conn) {
+				defer func() { <-sem }()
+				s.handle(c, signer)
+			}(c)
+		default:
+			_ = c.Close()
+		}
 	}
 }
 

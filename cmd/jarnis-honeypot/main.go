@@ -17,13 +17,6 @@ import (
 	"github.com/j-a-r-n-i-s/honeypot/internal/telserv"
 )
 
-func env(k, def string) string {
-	if v := os.Getenv(k); v != "" {
-		return v
-	}
-	return def
-}
-
 func envInt(k string, def int) int {
 	v := os.Getenv(k)
 	if v == "" {
@@ -36,44 +29,43 @@ func envInt(k string, def int) int {
 	return n
 }
 
+func tokenFromEnv() string {
+	t := strings.TrimSpace(os.Getenv("HONEYPOT_TOKEN"))
+	return strings.Trim(t, `"'`)
+}
+
+func validToken(t string) bool {
+	return len(t) >= 20 && t != "${HONEYPOT_TOKEN}"
+}
+
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmsgprefix)
 	log.SetPrefix("jarnis-hp ")
 
-	hpID := os.Getenv("HONEYPOT_ID")
-	token := strings.TrimSpace(os.Getenv("HONEYPOT_TOKEN"))
-	token = strings.Trim(token, `"'`)
-	api := env("JARNIS_API", "https://jarnis.io/api")
-	if token == "" || len(token) < 20 || token == "${HONEYPOT_TOKEN}" {
-		log.Printf("HONEYPOT_TOKEN missing or placeholder — waiting (set env HONEYPOT_TOKEN, do not use start command)")
+	token := tokenFromEnv()
+	if !validToken(token) {
+		log.Printf("waiting for HONEYPOT_TOKEN (env only — not the start command)")
 		for {
 			time.Sleep(15 * time.Second)
-			token = strings.Trim(strings.TrimSpace(os.Getenv("HONEYPOT_TOKEN")), `"'`)
-			if token != "" && len(token) >= 20 && token != "${HONEYPOT_TOKEN}" {
-				log.Printf("token appeared, continuing")
+			token = tokenFromEnv()
+			if validToken(token) {
 				break
 			}
-			log.Printf("still waiting for HONEYPOT_TOKEN")
 		}
 	}
 
 	sshPort := envInt("SSH_CONTAINER_PORT", 22)
 	telPort := envInt("TELNET_CONTAINER_PORT", 23)
 	httpPort := envInt("HTTP_CONTAINER_PORT", 8080)
-	interval := envInt("UPDATE_INTERVAL", 300)
-	if interval < 30 {
-		interval = 30
-	}
-	keyPath := env("SSH_HOST_KEY", "/var/lib/jarnis-honeypot/ssh_host_ecdsa")
 
-	cli := jarnis.New(api, hpID, token)
+	cli := jarnis.New("https://jarnis.io/api", "", token)
 	q := queue.New(500)
 
 	var mu sync.RWMutex
 	var live jarnis.Config
 	live.Services.SSH.Banner = "WARNING: This system is monitored.\n"
 	live.Services.Telnet.Banner = live.Services.SSH.Banner
-	live.UpdateIntervalSeconds = interval
+	interval := 300
 
 	apply := func(cfg *jarnis.Config) {
 		mu.Lock()
@@ -107,11 +99,8 @@ func main() {
 		return live.Services.HTTP.RotationMode
 	}
 
-	report := func(ev queue.Event) {
-		q.Push(ev)
-	}
+	report := func(ev queue.Event) { q.Push(ev) }
 
-	// First config fetch — banners/designs. Failure is OK; keep serving defaults.
 	if cfg, err := cli.FetchConfig(); err != nil {
 		log.Printf("config fetch failed (will retry): %v", err)
 	} else {
@@ -153,14 +142,13 @@ func main() {
 				continue
 			}
 			apply(cfg)
-			log.Printf("config refreshed designs=%d interval=%ds", len(cfg.Services.HTTP.Designs), cfg.UpdateIntervalSeconds)
 		}
 	}()
 
 	go func() {
-		s := &sshserv.Server{Addr: ":" + strconv.Itoa(sshPort), KeyPath: keyPath, Banner: bannerSSH, Report: report}
+		s := &sshserv.Server{Addr: ":" + strconv.Itoa(sshPort), KeyPath: "/var/lib/jarnis-honeypot/ssh_host_ecdsa", Banner: bannerSSH, Report: report}
 		if err := s.ListenAndServe(); err != nil {
-			log.Fatalf("ssh listen %s: %v (need root to bind :22, or set SSH_CONTAINER_PORT to a high port)", s.Addr, err)
+			log.Fatalf("ssh listen %s: %v", s.Addr, err)
 		}
 	}()
 	go func() {
@@ -176,7 +164,7 @@ func main() {
 		}
 	}()
 
-	log.Printf("sensor up id=%s api=%s ports ssh=:%d telnet=:%d http=:%d", cli.HoneypotID, cli.API, sshPort, telPort, httpPort)
+	log.Printf("sensor up ports ssh=:%d telnet=:%d http=:%d", sshPort, telPort, httpPort)
 	log.Printf("no interactive login is possible — credentials are captured and sent to JARNIS only")
 
 	sig := make(chan os.Signal, 1)
