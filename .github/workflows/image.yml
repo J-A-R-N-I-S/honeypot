@@ -52,4 +52,5 @@ jobs:
           push: true
           platforms: linux/amd64
           provenance: false
+          build-args: VERSION=${{ github.sha }}
           tags: ${{ steps.meta.outputs.tags }}

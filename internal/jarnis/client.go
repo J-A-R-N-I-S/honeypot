@@ -15,6 +15,17 @@ import (
 	"time"
 )
 
+// Version is the image/build id (ldflags). Old binaries stay "0.1".
+var Version = "0.1"
+
+func AgentString() string {
+	v := strings.TrimSpace(Version)
+	if v == "" {
+		v = "0.1"
+	}
+	return "jarnis-honeypot/" + v
+}
+
 // Client talks to the JARNIS control plane (config poll + credential backhaul).
 type Client struct {
 	API        string
@@ -201,7 +212,8 @@ func (c *Client) PostCredential(ev CredEvent) error {
 func (c *Client) auth(req *http.Request) {
 	req.Header.Set("Authorization", "Bearer "+c.Token)
 	req.Header.Set("X-Honeypot-Token", c.Token)
-	req.Header.Set("User-Agent", "jarnis-honeypot/0.1")
+	req.Header.Set("User-Agent", AgentString())
+	req.Header.Set("X-Jarnis-Agent", AgentString())
 }
 
 func clip(b []byte, n int) string {

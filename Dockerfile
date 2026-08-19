@@ -4,8 +4,11 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-    go build -trimpath -ldflags="-s -w" -o /out/jarnis-honeypot ./cmd/jarnis-honeypot
+ARG VERSION=dev
+RUN short=$(printf '%s' "$VERSION" | cut -c1-12) \
+ && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+    go build -trimpath -ldflags="-s -w -X github.com/j-a-r-n-i-s/honeypot/internal/jarnis.Version=${short}" \
+    -o /out/jarnis-honeypot ./cmd/jarnis-honeypot
 
 FROM alpine:3.20
 RUN apk add --no-cache ca-certificates \
