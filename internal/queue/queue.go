@@ -10,8 +10,9 @@ type Event struct {
 	Service   string
 	Username  string
 	Password  string
-	SourceIP  string
-	UserAgent string
+	SourceIP   string
+	SourcePort int
+	UserAgent  string
 	SessionID string
 	EventType string
 	Summary   string

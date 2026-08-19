@@ -34,10 +34,10 @@ func TestFetchAndPost(t *testing.T) {
 	if cfg.Name != "t" {
 		t.Fatalf("cfg %+v", cfg)
 	}
-	if err := c.PostCredential(CredEvent{Service: "ssh", Username: "u", Password: "p", SourceIP: "1.2.3.4"}); err != nil {
+	if err := c.PostCredential(CredEvent{Service: "ssh", Username: "u", Password: "p", SourceIP: "1.2.3.4", SourcePort: 51234}); err != nil {
 		t.Fatal(err)
 	}
-	if got.Username != "u" || got.HoneypotID != "hp_1" || got.Service != "ssh" {
+	if got.Username != "u" || got.HoneypotID != "hp_1" || got.Service != "ssh" || got.SourcePort != 51234 {
 		t.Fatalf("posted %+v", got)
 	}
 }

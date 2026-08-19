@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/j-a-r-n-i-s/honeypot/internal/jarnis"
+	"github.com/j-a-r-n-i-s/honeypot/internal/netaddr"
 	"github.com/j-a-r-n-i-s/honeypot/internal/queue"
 )
 
@@ -69,7 +70,7 @@ func (s *Server) Close() error {
 func (s *Server) handle(c net.Conn) {
 	defer c.Close()
 	_ = c.SetDeadline(time.Now().Add(30 * time.Second))
-	src := hostOnly(c.RemoteAddr().String())
+	src, sport := netaddr.Split(c.RemoteAddr().String())
 
 	// Refuse option negotiation; never enable a real terminal session.
 	_, _ = c.Write([]byte{iac, wont, echo, iac, dont, echo})
@@ -98,10 +99,11 @@ func (s *Server) handle(c net.Conn) {
 	}
 	if s.Report != nil {
 		s.Report(queue.Event{
-			Service:   "telnet",
-			Username:  user,
-			Password:  pass,
-			SourceIP:  src,
+			Service:    "telnet",
+			Username:   user,
+			Password:   pass,
+			SourceIP:   src,
+			SourcePort: sport,
 			EventType: "login_attempt",
 			Summary:   "TELNET login_attempt user=" + user,
 		})
@@ -150,10 +152,4 @@ func readLine(c net.Conn) (string, error) {
 	return strings.TrimSpace(b.String()), nil
 }
 
-func hostOnly(addr string) string {
-	h, _, err := net.SplitHostPort(addr)
-	if err != nil {
-		return addr
-	}
-	return h
-}
+

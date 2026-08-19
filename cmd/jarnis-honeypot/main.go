@@ -117,7 +117,7 @@ func main() {
 			}
 			ce := jarnis.CredEvent{
 				Service: ev.Service, Username: ev.Username, Password: ev.Password,
-				SourceIP: ev.SourceIP, UserAgent: ev.UserAgent, SessionID: ev.SessionID,
+				SourceIP: ev.SourceIP, SourcePort: ev.SourcePort, UserAgent: ev.UserAgent, SessionID: ev.SessionID,
 				EventType: ev.EventType, Summary: ev.Summary, Raw: ev.Raw,
 			}
 			if err := cli.PostCredential(ce); err != nil {

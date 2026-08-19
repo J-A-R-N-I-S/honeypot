@@ -74,6 +74,7 @@ type CredEvent struct {
 	Username   string         `json:"username"`
 	Password   string         `json:"password"`
 	SourceIP   string         `json:"sourceIp"`
+	SourcePort int            `json:"sourcePort,omitempty"`
 	UserAgent  string         `json:"userAgent,omitempty"`
 	SessionID  string         `json:"sessionId,omitempty"`
 	EventType  string         `json:"eventType"`

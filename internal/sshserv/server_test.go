@@ -54,4 +54,7 @@ func TestSSHPasswordAlwaysDenied(t *testing.T) {
 	if got.Username != "root" || got.Password != "letmein" || got.Service != "ssh" {
 		t.Fatalf("capture %+v (dial err %v)", got, err)
 	}
+	if got.SourceIP == "" || got.SourcePort < 1 {
+		t.Fatalf("expected source ip/port, got %+v", got)
+	}
 }

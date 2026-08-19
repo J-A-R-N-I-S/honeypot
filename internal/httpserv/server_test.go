@@ -38,6 +38,9 @@ func TestLoginNeverGrantsSession(t *testing.T) {
 	if got.SourceIP != "203.0.113.9" {
 		t.Fatalf("source ip %q", got.SourceIP)
 	}
+	if got.SourcePort != 5555 {
+		t.Fatalf("source port %d", got.SourcePort)
+	}
 }
 
 func TestIgnoresForwardedFor(t *testing.T) {
@@ -51,6 +54,9 @@ func TestIgnoresForwardedFor(t *testing.T) {
 	s.handle(httptest.NewRecorder(), req)
 	if got.SourceIP != "203.0.113.9" {
 		t.Fatalf("xff must be ignored, got %q", got.SourceIP)
+	}
+	if got.SourcePort != 5555 {
+		t.Fatalf("source port %d", got.SourcePort)
 	}
 }
 

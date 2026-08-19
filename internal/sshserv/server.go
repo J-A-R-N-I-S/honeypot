@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/j-a-r-n-i-s/honeypot/internal/jarnis"
+	"github.com/j-a-r-n-i-s/honeypot/internal/netaddr"
 	"github.com/j-a-r-n-i-s/honeypot/internal/queue"
 	"golang.org/x/crypto/ssh"
 )
@@ -72,11 +73,11 @@ func (s *Server) Close() error {
 func (s *Server) handle(nc net.Conn, signer ssh.Signer) {
 	defer nc.Close()
 	_ = nc.SetDeadline(time.Now().Add(45 * time.Second))
-	src := hostOnly(nc.RemoteAddr().String())
+	src, sport := netaddr.Split(nc.RemoteAddr().String())
 
 	cfg := &ssh.ServerConfig{
 		MaxAuthTries:      4,
-		PasswordCallback:  s.onPassword(src),
+		PasswordCallback:  s.onPassword(src, sport),
 		PublicKeyCallback: rejectKey,
 		AuthLogCallback:   nil,
 		ServerVersion:     "SSH-2.0-OpenSSH_9.6",
@@ -107,16 +108,17 @@ func (s *Server) handle(nc net.Conn, signer ssh.Signer) {
 	}
 }
 
-func (s *Server) onPassword(src string) func(ssh.ConnMetadata, []byte) (*ssh.Permissions, error) {
+func (s *Server) onPassword(src string, sport int) func(ssh.ConnMetadata, []byte) (*ssh.Permissions, error) {
 	return func(conn ssh.ConnMetadata, pass []byte) (*ssh.Permissions, error) {
 		user := conn.User()
 		if s.Report != nil {
 			s.Report(queue.Event{
-				Service:   "ssh",
-				Username:  user,
-				Password:  string(pass),
-				SourceIP:  src,
-				SessionID: fmt.Sprintf("%x", conn.SessionID()),
+				Service:    "ssh",
+				Username:   user,
+				Password:   string(pass),
+				SourceIP:   src,
+				SourcePort: sport,
+				SessionID:  fmt.Sprintf("%x", conn.SessionID()),
 				EventType: "login_attempt",
 				Summary:   "SSH login_attempt user=" + user,
 				Raw: map[string]any{
@@ -131,14 +133,6 @@ func (s *Server) onPassword(src string) func(ssh.ConnMetadata, []byte) (*ssh.Per
 
 func rejectKey(conn ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
 	return nil, fmt.Errorf("permission denied")
-}
-
-func hostOnly(addr string) string {
-	h, _, err := net.SplitHostPort(addr)
-	if err != nil {
-		return addr
-	}
-	return h
 }
 
 func loadOrCreateHostKey(path string) (ssh.Signer, error) {

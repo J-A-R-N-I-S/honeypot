@@ -5,13 +5,13 @@ import (
 	"html"
 	"io"
 	"log"
-	"net"
 	"net/http"
 	"strings"
 	"sync/atomic"
 	"time"
 
 	"github.com/j-a-r-n-i-s/honeypot/internal/jarnis"
+	"github.com/j-a-r-n-i-s/honeypot/internal/netaddr"
 	"github.com/j-a-r-n-i-s/honeypot/internal/queue"
 )
 
@@ -52,16 +52,17 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	src := hostOnly(r.RemoteAddr)
+	src, sport := netaddr.Split(r.RemoteAddr)
 
 	user, pass := extractCreds(r)
 	if r.Method == http.MethodPost || user != "" || pass != "" {
 		if s.Report != nil {
 			s.Report(queue.Event{
-				Service:   "http",
-				Username:  user,
-				Password:  pass,
-				SourceIP:  src,
+				Service:    "http",
+				Username:   user,
+				Password:   pass,
+				SourceIP:   src,
+				SourcePort: sport,
 				UserAgent: clip(r.UserAgent(), 400),
 				EventType: "login_attempt",
 				Summary:   "HTTP login_attempt user=" + user,
@@ -188,14 +189,6 @@ h1{margin:0 0 4px;font-size:1.25rem}p{margin:0 0 8px;color:#ffffff8a;font-size:.
 <form method="post" action="/login"><label>Username</label><input name="username" autocomplete="username">
 <label>Password</label><input name="password" type="password" autocomplete="current-password">
 <button type="submit">Sign in</button></form></div></body></html>`
-}
-
-func hostOnly(addr string) string {
-	h, _, err := net.SplitHostPort(addr)
-	if err != nil {
-		return addr
-	}
-	return h
 }
 
 func clip(s string, n int) string {
