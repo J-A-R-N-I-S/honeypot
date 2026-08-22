@@ -54,9 +54,9 @@ func main() {
 		}
 	}
 
-	sshPort := envInt("SSH_CONTAINER_PORT", 22)
-	telPort := envInt("TELNET_CONTAINER_PORT", 23)
-	httpPort := envInt("HTTP_CONTAINER_PORT", 8080)
+	sshPort := envInt("SSH_CONTAINER_PORT", 9022)
+	telPort := envInt("TELNET_CONTAINER_PORT", 9023)
+	httpPort := envInt("HTTP_CONTAINER_PORT", 9080)
 
 	cli := jarnis.New("https://jarnis.io/api", "", token)
 	q := queue.New(500)
@@ -121,7 +121,8 @@ func main() {
 				EventType: ev.EventType, Summary: ev.Summary, Raw: ev.Raw,
 			}
 			if err := cli.PostCredential(ce); err != nil {
-				log.Printf("backhaul retry: %v", err)
+				n, _ := q.Stats()
+				log.Printf("backhaul: upload failed (%d events held): %v", n+1, err)
 				q.Retry(ev, time.Duration(2+ev.Tries)*time.Second)
 			}
 		}
