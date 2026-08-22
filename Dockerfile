@@ -18,7 +18,7 @@ RUN chmod 755 /jarnis-honeypot \
     && ln -sf /jarnis-honeypot /usr/local/bin/jarnis-honeypot \
     && printf '%s\n' '#!/bin/sh' 'exec /jarnis-honeypot "$@"' > /start.sh \
     && chmod 755 /start.sh
-EXPOSE 22 23 8080
+EXPOSE 9022 9023 9080
 USER root
 # start command empty, or /start.sh / /jarnis-honeypot
 ENTRYPOINT ["/jarnis-honeypot"]
