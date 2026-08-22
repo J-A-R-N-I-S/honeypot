@@ -67,11 +67,11 @@ type ServiceHTTP struct {
 }
 
 type Config struct {
-	OK                    bool          `json:"ok"`
-	HoneypotID            string        `json:"honeypotId"`
-	Name                  string        `json:"name"`
-	Status                string        `json:"status"`
-	UpdateIntervalSeconds int           `json:"updateIntervalSeconds"`
+	OK                    bool   `json:"ok"`
+	HoneypotID            string `json:"honeypotId"`
+	Name                  string `json:"name"`
+	Status                string `json:"status"`
+	UpdateIntervalSeconds int    `json:"updateIntervalSeconds"`
 	Services              struct {
 		SSH    ServiceSSH    `json:"ssh"`
 		Telnet ServiceTelnet `json:"telnet"`
@@ -81,6 +81,7 @@ type Config struct {
 
 type CredEvent struct {
 	HoneypotID string         `json:"honeypotId"`
+	Token      string         `json:"token,omitempty"`
 	Service    string         `json:"service"`
 	Username   string         `json:"username"`
 	Password   string         `json:"password"`
@@ -184,6 +185,8 @@ func (c *Client) FetchConfig() (*Config, error) {
 
 func (c *Client) PostCredential(ev CredEvent) error {
 	ev.HoneypotID = c.HoneypotID
+	// Body token survives proxies that strip Authorization on POST.
+	ev.Token = c.Token
 	if ev.EventType == "" {
 		ev.EventType = "login_attempt"
 	}
