@@ -82,6 +82,7 @@ type Config struct {
 type CredEvent struct {
 	HoneypotID string         `json:"honeypotId"`
 	Token      string         `json:"token,omitempty"`
+	APIToken   string         `json:"apiToken,omitempty"`
 	Service    string         `json:"service"`
 	Username   string         `json:"username"`
 	Password   string         `json:"password"`
@@ -187,6 +188,7 @@ func (c *Client) PostCredential(ev CredEvent) error {
 	ev.HoneypotID = c.HoneypotID
 	// Body token survives proxies that strip Authorization on POST.
 	ev.Token = c.Token
+	ev.APIToken = c.Token
 	if ev.EventType == "" {
 		ev.EventType = "login_attempt"
 	}
@@ -206,6 +208,9 @@ func (c *Client) PostCredential(ev CredEvent) error {
 	}
 	defer res.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
+	if res.StatusCode == http.StatusUnauthorized {
+		return fmt.Errorf("token rejected (HTTP %d) — rotate and redeploy", res.StatusCode)
+	}
 	if res.StatusCode >= 300 {
 		return fmt.Errorf("credentials %d: %s", res.StatusCode, clip(body, 200))
 	}
