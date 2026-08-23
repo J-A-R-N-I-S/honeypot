@@ -1,10 +1,19 @@
 #!/usr/bin/env bash
 # Pull jarnis/honeypot:latest when the digest changed; recreate the running container.
+# Secrets stay in an env-file only — never passed as docker -e (no argv / ps leakage).
 # Never prints secret values (no set -x; env contents are not echoed).
 set -euo pipefail
 
+CONF=/etc/jarnis-honeypot-update.conf
+if [[ -f "$CONF" ]]; then
+  # shellcheck disable=SC1090
+  . "$CONF"
+fi
+
 IMAGE="${IMAGE:-jarnis/honeypot:latest}"
 NAME="${NAME:-jarnis-honeypot}"
+# Preferred: durable env file used at install (token never on cmdline).
+ENV_FILE="${ENV_FILE:-/root/jarnis-honeypot.env}"
 
 log() { printf 'jarnis-honeypot-update: %s\n' "$*"; }
 
@@ -36,8 +45,6 @@ if ! docker container inspect "$NAME" >/dev/null 2>&1; then
   exit 0
 fi
 
-# Recreate preserving restart policy, memory limit, published ports, and env.
-# Do not log env values.
 restart="$(docker inspect --format '{{.HostConfig.RestartPolicy.Name}}' "$NAME")"
 memory="$(docker inspect --format '{{.HostConfig.Memory}}' "$NAME")"
 
@@ -51,7 +58,6 @@ fi
 
 while IFS= read -r line; do
   [[ -z "$line" ]] && continue
-  # HostPort:containerPort[/proto] → strip /tcp (default)
   host="${line%%:*}"
   rest="${line#*:}"
   cport="${rest%%/*}"
@@ -63,13 +69,29 @@ while IFS= read -r line; do
   fi
 done < <(docker inspect --format '{{range $p, $conf := .HostConfig.PortBindings}}{{range $conf}}{{printf "%s:%s\n" .HostPort $p}}{{end}}{{end}}' "$NAME")
 
-while IFS= read -r line; do
-  [[ -z "$line" ]] && continue
-  case "$line" in
-    PATH=*|HOSTNAME=*|HOME=*|TERM=*) continue ;;
-  esac
-  run_args+=(-e "$line")
-done < <(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$NAME")
+# Env: prefer durable ENV_FILE; else write Config.Env to a 0600 temp and --env-file it.
+# Never use docker -e KEY=value (token would appear on process argv).
+env_tmp=""
+cleanup_env_tmp() {
+  if [[ -n "${env_tmp}" && -f "${env_tmp}" ]]; then
+    if command -v shred >/dev/null 2>&1; then
+      shred -u "${env_tmp}" 2>/dev/null || rm -f "${env_tmp}"
+    else
+      rm -f "${env_tmp}"
+    fi
+  fi
+}
+trap cleanup_env_tmp EXIT
+
+if [[ -f "$ENV_FILE" && -r "$ENV_FILE" ]]; then
+  run_args+=(--env-file "$ENV_FILE")
+else
+  env_tmp="$(mktemp)"
+  chmod 600 "$env_tmp"
+  # Write env lines only into the file — do not echo them.
+  docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$NAME" >"$env_tmp"
+  run_args+=(--env-file "$env_tmp")
+fi
 
 bak="${NAME}.pre-update"
 docker rename "$NAME" "$bak"
