@@ -1,6 +1,7 @@
 # Append this job to .github/workflows/image.yml (same file as ghcr).
 # Requires repo Actions secrets: DOCKERHUB_USERNAME, DOCKERHUB_TOKEN.
 # Job skips when either secret is empty (does not fail the workflow).
+# Or replace the whole workflow with deploy/ci/desired-image.yml (preferred).
 
   dockerhub:
     needs: test
@@ -21,9 +22,6 @@
           img="jarnis/honeypot"
           tags="${img}:latest"
           tags="${tags}"$'\n'"${img}:${GITHUB_SHA::12}"
-          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
-            tags="${tags}"$'\n'"${img}:${GITHUB_REF_NAME}"
-          fi
           echo "tags<<EOF" >> "$GITHUB_OUTPUT"
           echo "$tags" >> "$GITHUB_OUTPUT"
           echo "EOF" >> "$GITHUB_OUTPUT"
