@@ -1,0 +1,13 @@
+[Unit]
+Description=Update JARNIS honeypot container from Docker Hub
+Documentation=https://github.com/J-A-R-N-I-S/honeypot
+After=docker.service network-online.target
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/jarnis-honeypot-update
+
+[Install]
+WantedBy=multi-user.target

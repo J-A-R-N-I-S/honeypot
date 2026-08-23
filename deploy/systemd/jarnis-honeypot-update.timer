@@ -1,0 +1,10 @@
+[Unit]
+Description=Periodically update JARNIS honeypot from Docker Hub
+Documentation=https://github.com/J-A-R-N-I-S/honeypot
+
+[Timer]
+OnUnitActiveSec=1min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

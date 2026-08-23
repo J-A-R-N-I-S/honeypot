@@ -1,7 +1,8 @@
 # JARNIS capture-only honeypot — copy values from the app Install tab.
+# Customer image SoT: Docker Hub (jarnis/honeypot). GHCR is CI-only.
 services:
   honeypot:
-    image: ghcr.io/j-a-r-n-i-s/honeypot:latest
+    image: jarnis/honeypot:latest
     build: .
     restart: unless-stopped
     mem_limit: 128m
