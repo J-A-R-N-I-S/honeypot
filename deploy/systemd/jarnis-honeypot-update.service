@@ -1,0 +1,15 @@
+[Unit]
+Description=Pull and recreate JARNIS honeypot if Hub image changed
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/jarnis-honeypot-update.sh
+# Do not pass honeypot token here; the running container already holds it.
+Environment=IMAGE=jarnis/honeypot:latest
+Environment=NAME=jarnis-honeypot
+Nice=10
+
+[Install]
+WantedBy=multi-user.target

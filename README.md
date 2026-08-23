@@ -5,6 +5,9 @@ Credentials go to [jarnis.io](https://jarnis.io) over HTTPS.
 
 **Full install guide:** https://jarnis.io/guides/self-hosted-honeypot.html
 
+**Customer image:** Docker Hub [`jarnis/honeypot`](https://hub.docker.com/r/jarnis/honeypot) (`:latest` and `:<sha12>`).  
+**GHCR** (`ghcr.io/j-a-r-n-i-s/honeypot`) is an **internal CI artifact only** — not the customer source of truth.
+
 ## Quick start (Docker Hub)
 
 1. In [jarnis.io](https://jarnis.io) → **Honeypots** create a sensor and copy the full `hpt_…` token **once** (~52 characters from the create/rotate modal — not a truncated prefix).
@@ -24,9 +27,25 @@ Only **one** environment variable is required. In the app, `${HONEYPOT_TOKEN}` i
 
 Image on Docker Hub: https://hub.docker.com/r/jarnis/honeypot
 
+## Auto-update (systemd timer)
+
+Hosts can poll Hub every minute and recreate the container only when the image digest changes (`scripts/jarnis-honeypot-update.sh`). The script never prints secret values.
+
+Enable (from a clone of this repo):
+
+```bash
+sudo install -m 755 scripts/jarnis-honeypot-update.sh /usr/local/bin/jarnis-honeypot-update.sh && \
+sudo cp deploy/systemd/jarnis-honeypot-update.service deploy/systemd/jarnis-honeypot-update.timer /etc/systemd/system/ && \
+sudo systemctl daemon-reload && sudo systemctl enable --now jarnis-honeypot-update.timer
+```
+
+Check: `systemctl list-timers jarnis-honeypot-update.timer` and `journalctl -u jarnis-honeypot-update.service`.
+
+Override image/name with drop-in env if needed (`IMAGE`, `NAME`). Default `IMAGE=jarnis/honeypot:latest`.
+
 ## Install guides
 
-### Docker (Hub)
+### Docker (Hub) — preferred
 
 ```bash
 docker pull jarnis/honeypot:latest
@@ -38,22 +57,14 @@ docker run -d --name jarnis-honeypot --restart unless-stopped --memory 128m \
 
 Leave the start command empty. The image entrypoint is `/jarnis-honeypot`.
 
-### Docker (GHCR alternative)
-
-```bash
-docker pull ghcr.io/j-a-r-n-i-s/honeypot:latest
-docker run -d --name jarnis-honeypot --restart unless-stopped --memory 128m \
-  -e HONEYPOT_TOKEN=hpt_… \
-  -p 22:22 -p 23:23 -p 8080:8080 \
-  ghcr.io/j-a-r-n-i-s/honeypot:latest
-```
-
 ### Docker Compose
 
 ```bash
 cp examples/env.example .env   # set HONEYPOT_TOKEN
 docker compose up -d
 ```
+
+Compose uses `jarnis/honeypot:latest` from Hub.
 
 ### Binary (no Docker)
 
@@ -63,6 +74,16 @@ HONEYPOT_TOKEN=hpt_… ./jarnis-honeypot
 ```
 
 Needs bind rights for :22 / :23 (root or `cap_net_bind_service`).
+
+## CI images
+
+On every `main` push / `v*` tag, `.github/workflows/image.yml`:
+
+1. Runs tests.
+2. Pushes **GHCR** (internal CI artifact): `ghcr.io/j-a-r-n-i-s/honeypot:latest` and `:<sha12>`.
+3. Pushes **Docker Hub** (customer SoT): `jarnis/honeypot:latest` and `:<sha12>`, in parallel with GHCR after tests.
+
+Hub publish needs repository secrets **`DOCKERHUB_USERNAME`** and **`DOCKERHUB_TOKEN`**. If either is empty, the Hub job emits a notice and skips the push (workflow still succeeds; GHCR-only). Configure those secrets on the GitHub repo so Hub `jarnis/honeypot:latest` stays current with `main`.
 
 ## Environment
 
