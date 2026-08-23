@@ -87,6 +87,7 @@ type CredEvent struct {
 	Password   string         `json:"password"`
 	SourceIP   string         `json:"sourceIp"`
 	SourcePort int            `json:"sourcePort,omitempty"`
+	PublicIP   string         `json:"publicIp,omitempty"`
 	UserAgent  string         `json:"userAgent,omitempty"`
 	SessionID  string         `json:"sessionId,omitempty"`
 	EventType  string         `json:"eventType"`
@@ -158,6 +159,10 @@ func (c *Client) FetchConfig() (*Config, error) {
 	if c.HoneypotID != "" {
 		q.Set("honeypotId", c.HoneypotID)
 	}
+	// Refresh egress IP on each config poll; best-effort, never fails the request.
+	if ip := refreshPublicIP(); ip != "" {
+		q.Set("publicIp", ip)
+	}
 	u.RawQuery = q.Encode()
 	req, err := http.NewRequest(http.MethodGet, u.String(), nil)
 	if err != nil {
@@ -189,6 +194,13 @@ func (c *Client) PostCredential(ev CredEvent) error {
 	ev.Token = c.Token
 	if ev.EventType == "" {
 		ev.EventType = "login_attempt"
+	}
+	if ev.PublicIP == "" {
+		if ip := getCachedPublicIP(); ip != "" {
+			ev.PublicIP = ip
+		} else if ip := refreshPublicIP(); ip != "" {
+			ev.PublicIP = ip
+		}
 	}
 	payload, err := json.Marshal(ev)
 	if err != nil {
