@@ -1,0 +1,8 @@
+[Unit]
+Description=Sync honeypot release pin from Docker Hub release.json
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/jarnis-honeypot-release-sync.sh
