@@ -3,27 +3,46 @@
 # Capture-only SSH, Telnet and HTTP. Attackers never get a shell or a cookie.
 # Credentials go to https://jarnis.io over HTTPS.
 #
-#     docker pull ghcr.io/j-a-r-n-i-s/honeypot:latest
+#     docker pull jarnis/honeypot:latest
+
+**Docs:** [Self-hosted honeypot guide](https://jarnis.io/guides/self-hosted-honeypot.html)
 
 ## Quick start
 
-1. In [jarnis.io](https://jarnis.io) → **Honeypots** create a sensor and copy the `hpt_…` token **once**.
+1. In [jarnis.io](https://jarnis.io) → **Honeypots** create (or rotate) a sensor and copy the full `hpt_…` token **once** from the modal (~52 characters). You will not see it again.
 2. Run:
 
 ```bash
+docker pull jarnis/honeypot:latest
 docker run -d --name jarnis-honeypot --restart unless-stopped --memory 128m \
   -e HONEYPOT_TOKEN=hpt_… \
   -p 22:22 -p 23:23 -p 8080:8080 \
-  ghcr.io/j-a-r-n-i-s/honeypot:latest
+  jarnis/honeypot:latest
 ```
 
 3. Check: `ssh user@HOST` fails, `curl http://HOST:8080/` shows the login page, the attempt appears on the dashboard.
 
-Only **one** environment variable is required.
+Only **one** environment variable is required. `${HONEYPOT_TOKEN}` in the app UI is a placeholder, not a secret — paste the real `hpt_…` value into the container env.
 
 ## Install guides
 
-### Docker
+**Docs:** https://jarnis.io/guides/self-hosted-honeypot.html
+
+### Docker (Docker Hub)
+
+```bash
+docker pull jarnis/honeypot:latest
+docker run -d --name jarnis-honeypot --restart unless-stopped --memory 128m \
+  -e HONEYPOT_TOKEN=hpt_… \
+  -p 22:22 -p 23:23 -p 8080:8080 \
+  jarnis/honeypot:latest
+```
+
+Leave the start command empty. The image entrypoint is `/jarnis-honeypot`.
+
+### Docker (GitHub Container Registry)
+
+Alternative registry if you prefer GHCR:
 
 ```bash
 docker pull ghcr.io/j-a-r-n-i-s/honeypot:latest
@@ -32,8 +51,6 @@ docker run -d --name jarnis-honeypot --restart unless-stopped --memory 128m \
   -p 22:22 -p 23:23 -p 8080:8080 \
   ghcr.io/j-a-r-n-i-s/honeypot:latest
 ```
-
-Leave the start command empty. The image entrypoint is `/jarnis-honeypot`.
 
 ### Docker Compose
 
@@ -51,11 +68,17 @@ HONEYPOT_TOKEN=hpt_… ./jarnis-honeypot
 
 Needs bind rights for :22 / :23 (root or `cap_net_bind_service`).
 
+## Docker Hub
+
+Customer-facing install uses **`jarnis/honeypot:latest`** on [Docker Hub](https://hub.docker.com/r/jarnis/honeypot). Prefer that tag for docs, Jones/E2E, and copy-paste run commands. GHCR (`ghcr.io/j-a-r-n-i-s/honeypot`) remains an alternative registry.
+
+The short summary meant for the Hub **Full description** lives in [`docs/dockerhub-description.md`](docs/dockerhub-description.md). Updating this README alone does **not** update Docker Hub — Hub text must be set separately (or via a future dockerhub-description Action).
+
 ## Environment
 
 | Variable | Required | Default |
 |----------|----------|---------|
-| `HONEYPOT_TOKEN` | **yes** | full `hpt_…` from create/rotate |
+| `HONEYPOT_TOKEN` | **yes** | full `hpt_…` from create/rotate modal (~52 chars) |
 | `SSH_CONTAINER_PORT` | no | `22` |
 | `TELNET_CONTAINER_PORT` | no | `23` |
 | `HTTP_CONTAINER_PORT` | no | `8080` |
