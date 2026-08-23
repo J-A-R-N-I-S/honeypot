@@ -38,7 +38,7 @@ docker run -d --name jarnis-honeypot --restart unless-stopped --memory 128m \
 
 Leave the start command empty. The image entrypoint is `/jarnis-honeypot`.
 
-### Docker (GHCR alternative)
+### Docker (GHCR — CI artifact only, not customer SoT)
 
 ```bash
 docker pull ghcr.io/j-a-r-n-i-s/honeypot:latest
@@ -86,6 +86,38 @@ Port changes need a recreate. Banner and design changes apply on the next poll (
 - Control-plane client follows **no** HTTP redirects and uses no HTTP proxy.
 
 Report issues via GitHub Security Advisories on this repository.
+
+
+## Auto-update (Docker Hub)
+
+Customer images are published to **Docker Hub** (`jarnis/honeypot:latest`) by CI when repository secrets are set. GHCR builds remain an internal CI artifact.
+
+### VPS (systemd, preferred)
+
+```bash
+# update script (Hub default IMAGE=jarnis/honeypot:latest)
+curl -fsSL https://jarnis.io/guides/jarnis-honeypot-update.sh -o /usr/local/sbin/jarnis-honeypot-update
+chmod 755 /usr/local/sbin/jarnis-honeypot-update
+
+# units from this repo
+curl -fsSL https://raw.githubusercontent.com/J-A-R-N-I-S/honeypot/main/deploy/systemd/jarnis-honeypot-update.service -o /etc/systemd/system/jarnis-honeypot-update.service
+curl -fsSL https://raw.githubusercontent.com/J-A-R-N-I-S/honeypot/main/deploy/systemd/jarnis-honeypot-update.timer -o /etc/systemd/system/jarnis-honeypot-update.timer
+systemctl daemon-reload
+systemctl enable --now jarnis-honeypot-update.timer
+```
+
+Optional `/etc/jarnis-honeypot-update.conf`: `NAME`, `IMAGE` (default `jarnis/honeypot:latest`), `ENV_FILE` (default `/root/jarnis-honeypot.env`). The script never prints the env file or token.
+
+### CI secrets (Hub publish)
+
+On the GitHub repo **Settings → Secrets and variables → Actions**, add:
+
+| Secret | Purpose |
+|--------|---------|
+| `DOCKERHUB_USERNAME` | Docker Hub username that can push `jarnis/honeypot` |
+| `DOCKERHUB_TOKEN` | Docker Hub access token (read/write) |
+
+When both are set, the `dockerhub` job on `main` pushes `jarnis/honeypot:latest` and `jarnis/honeypot:<sha12>`. If either secret is missing, that job is skipped (GHCR job still runs).
 
 ## License
 
