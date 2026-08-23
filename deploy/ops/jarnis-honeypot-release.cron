@@ -1,0 +1,3 @@
+# Hub release sync — replace GHCR git ls-remote version
+# Install as /etc/cron.d/jarnis-honeypot-release (remove .off / .disabled*)
+35 * * * * root /usr/local/sbin/jarnis-honeypot-release-sync >> /var/log/jarnis/honeypot-release.log 2>&1

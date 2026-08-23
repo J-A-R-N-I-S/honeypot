@@ -1,0 +1,57 @@
+#!/bin/sh
+# Hub SoT: write /etc/jarnis/honeypot_release.php from deploy/release.json
+# (updated by Hub CI after Docker Hub publish). Replaces GHCR git ls-remote sync.
+#
+# Install: /usr/local/sbin/jarnis-honeypot-release-sync
+# Cron:    35 * * * * root /usr/local/sbin/jarnis-honeypot-release-sync >> /var/log/jarnis/honeypot-release.log 2>&1
+set -eu
+
+OUT="${JARNIS_HONEYPOT_RELEASE_OUT:-/etc/jarnis/honeypot_release.php}"
+URL="${JARNIS_HONEYPOT_RELEASE_URL:-https://raw.githubusercontent.com/J-A-R-N-I-S/honeypot/main/deploy/release.json}"
+TMP="$(mktemp)"
+trap 'rm -f "$TMP"' EXIT
+
+curl -fsSL --max-time 15 -A 'jarnis-honeypot-release-sync/hub' "$URL" -o "$TMP"
+
+# Prefer python3 for JSON; fall back to a tiny awk/sed path if needed
+if command -v python3 >/dev/null 2>&1; then
+  python3 - "$TMP" "$OUT" <<'PY'
+import json, pathlib, sys, datetime
+src, out = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+doc = json.loads(src.read_text())
+ver = str(doc.get("version") or "").strip()
+if not ver:
+    raise SystemExit("release.json missing version")
+tags = [str(t) for t in (doc.get("tags") or [ver])]
+for t in ("v1.0-hostinger", "v1.0"):
+    if t not in tags:
+        tags.append(t)
+# No force=true — website #56 Hub fetch is primary; /etc only adds tags.
+lines = [
+    "<?php",
+    "/** Auto-synced from Hub deploy/release.json (not GHCR). */",
+    "return [",
+    "    'version' => %s," % json.dumps(ver),
+    "    'tags' => [",
+]
+for t in tags:
+    lines.append("        %s," % json.dumps(t))
+lines += [
+    "    ],",
+    "    'source' => 'dockerhub',",
+    "    'image' => 'jarnis/honeypot:latest',",
+    "    'synced_at' => %s," % json.dumps(datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")),
+    "];",
+    "",
+]
+out.parent.mkdir(parents=True, exist_ok=True)
+tmp = out.with_suffix(".php.tmp")
+tmp.write_text("\n".join(lines))
+tmp.chmod(0o644)
+tmp.replace(out)
+print("wrote %s version=%s" % (out, ver))
+PY
+else
+  echo "python3 required" >&2
+  exit 1
+fi
