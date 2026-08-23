@@ -9,7 +9,17 @@ import (
 )
 
 func TestFetchAndPost(t *testing.T) {
+	prev := discoverPublicIPv4
+	discoverPublicIPv4 = func() string { return "8.8.8.8" }
+	t.Cleanup(func() {
+		discoverPublicIPv4 = prev
+		publicIPMu.Lock()
+		cachedPublicIP = ""
+		publicIPMu.Unlock()
+	})
+
 	var got CredEvent
+	var configPublicIP string
 	var credAuth, credXHP string
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/honeypots/config.php", func(w http.ResponseWriter, r *http.Request) {
@@ -17,6 +27,7 @@ func TestFetchAndPost(t *testing.T) {
 			http.Error(w, "no", 401)
 			return
 		}
+		configPublicIP = r.URL.Query().Get("publicIp")
 		_ = json.NewEncoder(w).Encode(Config{OK: true, HoneypotID: "hp_1", Name: "t", UpdateIntervalSeconds: 60})
 	})
 	mux.HandleFunc("/api/honeypots/credentials.php", func(w http.ResponseWriter, r *http.Request) {
@@ -37,6 +48,9 @@ func TestFetchAndPost(t *testing.T) {
 	if cfg.Name != "t" {
 		t.Fatalf("cfg %+v", cfg)
 	}
+	if configPublicIP != "8.8.8.8" {
+		t.Fatalf("config publicIp=%q", configPublicIP)
+	}
 	if err := c.PostCredential(CredEvent{Service: "ssh", Username: "u", Password: "p", SourceIP: "1.2.3.4", SourcePort: 51234}); err != nil {
 		t.Fatal(err)
 	}
@@ -45,6 +59,9 @@ func TestFetchAndPost(t *testing.T) {
 	}
 	if got.Token != "hpt_testtoken_1234567890" {
 		t.Fatalf("body token missing: %+v", got)
+	}
+	if got.PublicIP != "8.8.8.8" {
+		t.Fatalf("body publicIp=%q", got.PublicIP)
 	}
 	if credAuth != "Bearer hpt_testtoken_1234567890" || credXHP != "hpt_testtoken_1234567890" {
 		t.Fatalf("headers auth=%q xhp=%q", credAuth, credXHP)
