@@ -88,6 +88,11 @@ Port changes need a recreate. Banner and design changes apply on the next poll (
 Report issues via GitHub Security Advisories on this repository.
 
 
+
+## Release pointer (Sensor veraltet)
+
+After each successful Hub publish, CI updates [`deploy/release.json`](deploy/release.json) with the 12-char build id baked into the image (`VERSION=$GITHUB_SHA`). The JARNIS website reads this file so **SENSOR VERALTET** tracks Docker Hub, not a stale GHCR `/etc` pin.
+
 ## Auto-update (Docker Hub)
 
 Customer images are published to **Docker Hub** (`jarnis/honeypot:latest`) by CI when repository secrets are set. GHCR builds remain an internal CI artifact.
