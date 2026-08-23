@@ -77,13 +77,15 @@ Needs bind rights for :22 / :23 (root or `cap_net_bind_service`).
 
 ## CI images
 
-On every `main` push / `v*` tag, `.github/workflows/image.yml`:
+Target workflow (tests → GHCR + Hub in parallel) is checked in as [`deploy/ci/image.yml`](deploy/ci/image.yml):
 
 1. Runs tests.
-2. Pushes **GHCR** (internal CI artifact): `ghcr.io/j-a-r-n-i-s/honeypot:latest` and `:<sha12>`.
-3. Pushes **Docker Hub** (customer SoT): `jarnis/honeypot:latest` and `:<sha12>`, in parallel with GHCR after tests.
+2. Pushes **GHCR** (internal CI artifact only): `ghcr.io/j-a-r-n-i-s/honeypot:latest` and `:<sha12>`.
+3. Pushes **Docker Hub** (customer SoT): `jarnis/honeypot:latest` and `:<sha12>`.
 
-Hub publish needs repository secrets **`DOCKERHUB_USERNAME`** and **`DOCKERHUB_TOKEN`**. If either is empty, the Hub job emits a notice and skips the push (workflow still succeeds; GHCR-only). Configure those secrets on the GitHub repo so Hub `jarnis/honeypot:latest` stays current with `main`.
+**Apply once:** copy `deploy/ci/image.yml` → `.github/workflows/image.yml` in the GitHub UI (or with a token that has **`workflow`** scope). Until that lands, CI still publishes GHCR only.
+
+Hub publish needs repository secrets **`DOCKERHUB_USERNAME`** and **`DOCKERHUB_TOKEN`**. If either is empty, the Hub job emits a notice and skips the push (workflow still succeeds).
 
 ## Environment
 
