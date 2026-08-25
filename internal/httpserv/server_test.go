@@ -35,6 +35,9 @@ func TestLoginNeverGrantsSession(t *testing.T) {
 	if got.Username != "admin" || got.Password != "hunter2" || got.Service != "http" {
 		t.Fatalf("capture mismatch: %+v", got)
 	}
+	if got.EventType != "login_attempt" {
+		t.Fatalf("POST creds must stay login_attempt, got %q", got.EventType)
+	}
 	if got.SourceIP != "203.0.113.9" {
 		t.Fatalf("source ip %q", got.SourceIP)
 	}
@@ -61,14 +64,46 @@ func TestIgnoresForwardedFor(t *testing.T) {
 }
 
 func TestHealthzSilent(t *testing.T) {
-	called := false
-	s := &Server{Report: func(queue.Event) { called = true }}
+	var got queue.Event
+	s := &Server{Report: func(ev queue.Event) { got = ev }}
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	req.RemoteAddr = "203.0.113.9:1"
 	rr := httptest.NewRecorder()
 	s.handle(rr, req)
-	if called {
+	if got.EventType == "login_attempt" {
 		t.Fatal("GET /healthz must not report a login")
+	}
+	if got.EventType != "connection" || got.Service != "http" {
+		t.Fatalf("GET /healthz should report connection, got %+v", got)
+	}
+	if got.Username != "" || got.Password != "" {
+		t.Fatalf("connection must have empty creds: %+v", got)
+	}
+	if got.Raw["method"] != "GET" || got.Raw["path"] != "/healthz" {
+		t.Fatalf("raw %+v", got.Raw)
+	}
+}
+
+func TestHTTPHeadConnection(t *testing.T) {
+	var got queue.Event
+	s := &Server{Report: func(ev queue.Event) { got = ev }}
+	req := httptest.NewRequest(http.MethodHead, "/", nil)
+	req.RemoteAddr = "203.0.113.9:9"
+	s.handle(httptest.NewRecorder(), req)
+	if got.EventType != "connection" || got.SourcePort != 9 {
+		t.Fatalf("%+v", got)
+	}
+}
+
+func TestHTTPPostWithoutCredsIsConnection(t *testing.T) {
+	var got queue.Event
+	s := &Server{Report: func(ev queue.Event) { got = ev }}
+	req := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader("foo=bar"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.RemoteAddr = "203.0.113.9:8"
+	s.handle(httptest.NewRecorder(), req)
+	if got.EventType != "connection" || got.Username != "" {
+		t.Fatalf("POST without creds should be connection, got %+v", got)
 	}
 }
 
