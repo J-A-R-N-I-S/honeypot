@@ -12,6 +12,7 @@ import (
 
 	"github.com/j-a-r-n-i-s/honeypot/internal/httpserv"
 	"github.com/j-a-r-n-i-s/honeypot/internal/jarnis"
+	"github.com/j-a-r-n-i-s/honeypot/internal/probe"
 	"github.com/j-a-r-n-i-s/honeypot/internal/queue"
 	"github.com/j-a-r-n-i-s/honeypot/internal/sshserv"
 	"github.com/j-a-r-n-i-s/honeypot/internal/telserv"
@@ -99,7 +100,8 @@ func main() {
 		return live.Services.HTTP.RotationMode
 	}
 
-	report := func(ev queue.Event) { q.Push(ev) }
+	tracker := probe.New()
+	report := tracker.Report(func(ev queue.Event) { q.Push(ev) })
 
 	if cfg, err := cli.FetchConfig(); err != nil {
 		log.Printf("config fetch failed (will retry): %v", err)

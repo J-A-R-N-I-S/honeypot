@@ -72,6 +72,20 @@ func (s *Server) handle(c net.Conn) {
 	_ = c.SetDeadline(time.Now().Add(30 * time.Second))
 	src, sport := netaddr.Split(c.RemoteAddr().String())
 
+	captured := false
+	defer func() {
+		if captured || s.Report == nil {
+			return
+		}
+		s.Report(queue.Event{
+			Service:    "telnet",
+			SourceIP:   src,
+			SourcePort: sport,
+			EventType:  "connection",
+			Summary:    "TELNET connection",
+		})
+	}()
+
 	// Refuse option negotiation; never enable a real terminal session.
 	_, _ = c.Write([]byte{iac, wont, echo, iac, dont, echo})
 
@@ -97,6 +111,7 @@ func (s *Server) handle(c net.Conn) {
 	if err != nil {
 		return
 	}
+	captured = true
 	if s.Report != nil {
 		s.Report(queue.Event{
 			Service:    "telnet",
@@ -104,8 +119,8 @@ func (s *Server) handle(c net.Conn) {
 			Password:   pass,
 			SourceIP:   src,
 			SourcePort: sport,
-			EventType: "login_attempt",
-			Summary:   "TELNET login_attempt user=" + user,
+			EventType:  "login_attempt",
+			Summary:    "TELNET login_attempt user=" + user,
 		})
 	}
 	jarnis.Logf("telnet capture %s user=%s (denied)", src, user)
@@ -151,5 +166,3 @@ func readLine(c net.Conn) (string, error) {
 	}
 	return strings.TrimSpace(b.String()), nil
 }
-
-

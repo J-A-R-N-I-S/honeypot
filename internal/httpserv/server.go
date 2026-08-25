@@ -16,12 +16,12 @@ import (
 )
 
 type Server struct {
-	Addr     string
-	Designs  func() []jarnis.Design
-	Mode     func() string
-	Report   func(queue.Event)
-	rr       atomic.Uint64
-	server   *http.Server
+	Addr    string
+	Designs func() []jarnis.Design
+	Mode    func() string
+	Report  func(queue.Event)
+	rr      atomic.Uint64
+	server  *http.Server
 }
 
 func (s *Server) ListenAndServe() error {
@@ -48,31 +48,45 @@ func (s *Server) Close() error {
 }
 
 func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet && r.Method != http.MethodPost && r.Method != http.MethodHead {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
 	src, sport := netaddr.Split(r.RemoteAddr)
+	allowed := r.Method == http.MethodGet || r.Method == http.MethodPost || r.Method == http.MethodHead
 
-	user, pass := extractCreds(r)
-	if r.Method == http.MethodPost || user != "" || pass != "" {
-		if s.Report != nil {
+	user, pass := "", ""
+	if allowed {
+		user, pass = extractCreds(r)
+	}
+
+	if s.Report != nil {
+		raw := map[string]any{"path": r.URL.Path, "method": r.Method}
+		if user != "" || pass != "" {
 			s.Report(queue.Event{
 				Service:    "http",
 				Username:   user,
 				Password:   pass,
 				SourceIP:   src,
 				SourcePort: sport,
-				UserAgent: clip(r.UserAgent(), 400),
-				EventType: "login_attempt",
-				Summary:   "HTTP login_attempt user=" + user,
-				Raw: map[string]any{
-					"path":   r.URL.Path,
-					"method": r.Method,
-				},
+				UserAgent:  clip(r.UserAgent(), 400),
+				EventType:  "login_attempt",
+				Summary:    "HTTP login_attempt user=" + user,
+				Raw:        raw,
+			})
+			jarnis.Logf("http capture %s user=%s path=%s (denied)", src, user, r.URL.Path)
+		} else {
+			s.Report(queue.Event{
+				Service:    "http",
+				SourceIP:   src,
+				SourcePort: sport,
+				UserAgent:  clip(r.UserAgent(), 400),
+				EventType:  "connection",
+				Summary:    "HTTP connection " + r.Method + " " + r.URL.Path,
+				Raw:        raw,
 			})
 		}
-		jarnis.Logf("http capture %s user=%s path=%s (denied)", src, user, r.URL.Path)
+	}
+
+	if !allowed {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
 	}
 
 	page := s.pageFor(src)
