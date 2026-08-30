@@ -12,11 +12,13 @@ Credentials go to [jarnis.io](https://jarnis.io) over HTTPS.
 
 ```bash
 docker pull jarnis/honeypot:latest
-docker run -d --name jarnis-honeypot --restart unless-stopped --memory 128m \
+docker run -d --name jarnis-honeypot --restart unless-stopped --memory 64m \
   -e HONEYPOT_TOKEN=hpt_… \
   -p 22:22 -p 23:23 -p 8080:8080 \
   jarnis/honeypot:latest
 ```
+
+Live sensor uses ~6 MB RAM. A 64 MB limit leaves room for other services without a 20× over-reserve.
 
 3. Check: `ssh user@HOST` fails, `curl http://HOST:8080/` shows the login page, the attempt appears on the dashboard.
 
@@ -30,7 +32,7 @@ Image on Docker Hub: https://hub.docker.com/r/jarnis/honeypot
 
 ```bash
 docker pull jarnis/honeypot:latest
-docker run -d --name jarnis-honeypot --restart unless-stopped --memory 128m \
+docker run -d --name jarnis-honeypot --restart unless-stopped --memory 64m \
   -e HONEYPOT_TOKEN=hpt_… \
   -p 22:22 -p 23:23 -p 8080:8080 \
   jarnis/honeypot:latest
@@ -42,7 +44,7 @@ Leave the start command empty. The image entrypoint is `/jarnis-honeypot`.
 
 ```bash
 docker pull ghcr.io/j-a-r-n-i-s/honeypot:latest
-docker run -d --name jarnis-honeypot --restart unless-stopped --memory 128m \
+docker run -d --name jarnis-honeypot --restart unless-stopped --memory 64m \
   -e HONEYPOT_TOKEN=hpt_… \
   -p 22:22 -p 23:23 -p 8080:8080 \
   ghcr.io/j-a-r-n-i-s/honeypot:latest
