@@ -16,3 +16,11 @@ func TestNormalizeAPI(t *testing.T) {
 		}
 	}
 }
+
+func TestProcessUptimeSeconds(t *testing.T) {
+	n := ProcessUptimeSeconds()
+	if n < 0 {
+		t.Fatalf("ProcessUptimeSeconds()=%d want >= 0", n)
+	}
+}
+

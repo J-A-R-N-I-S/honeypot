@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 )
 
@@ -28,6 +29,12 @@ func TestFetchAndPost(t *testing.T) {
 			return
 		}
 		configPublicIP = r.URL.Query().Get("publicIp")
+		uptimeStr := r.URL.Query().Get("uptimeSeconds")
+		if uptimeStr == "" {
+			t.Error("uptimeSeconds query param missing")
+		} else if n, err := strconv.Atoi(uptimeStr); err != nil || n < 0 {
+			t.Errorf("uptimeSeconds=%q want non-empty integer >= 0", uptimeStr)
+		}
 		_ = json.NewEncoder(w).Encode(Config{OK: true, HoneypotID: "hp_1", Name: "t", UpdateIntervalSeconds: 60})
 	})
 	mux.HandleFunc("/api/honeypots/credentials.php", func(w http.ResponseWriter, r *http.Request) {

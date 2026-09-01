@@ -11,12 +11,33 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
 
 // Version is the image/build id (ldflags). Old binaries stay "0.1".
 var Version = "0.1"
+
+// processStartedAt is this Go process start time (not Docker/host uptime).
+var processStartedAt time.Time
+
+func init() {
+	processStartedAt = time.Now()
+}
+
+// ProcessUptimeSeconds is seconds since THIS Go process started.
+// Never reads /proc/uptime.
+func ProcessUptimeSeconds() int {
+	if processStartedAt.IsZero() {
+		processStartedAt = time.Now()
+	}
+	sec := int(time.Since(processStartedAt).Seconds())
+	if sec < 0 {
+		return 0
+	}
+	return sec
+}
 
 func AgentString() string {
 	v := strings.TrimSpace(Version)
@@ -163,6 +184,7 @@ func (c *Client) FetchConfig() (*Config, error) {
 	if ip := refreshPublicIP(); ip != "" {
 		q.Set("publicIp", ip)
 	}
+	q.Set("uptimeSeconds", strconv.Itoa(ProcessUptimeSeconds()))
 	u.RawQuery = q.Encode()
 	req, err := http.NewRequest(http.MethodGet, u.String(), nil)
 	if err != nil {
