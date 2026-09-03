@@ -1,6 +1,6 @@
 [Unit]
 Description=Pull jarnis/honeypot from Docker Hub and recreate if digest changed
-Documentation=https://github.com/J-A-R-N-I-S/honeypot
+Documentation=https://jarnis.io/guides/honeypot-auto-update.html
 After=docker.service network-online.target
 Wants=network-online.target
 Requires=docker.service
@@ -8,7 +8,7 @@ Requires=docker.service
 [Service]
 Type=oneshot
 ExecStart=/usr/local/sbin/jarnis-honeypot-update
-# Do not pass HONEYPOT_TOKEN here — token stays in ENV_FILE only.
+# Do not pass HONEYPOT_TOKEN here — token stays in the container env / ENV_FILE.
 Nice=10
 
 [Install]
