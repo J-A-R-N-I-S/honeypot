@@ -14,6 +14,8 @@ services:
       - /tmp
     volumes:
       - hp-state:/var/lib/jarnis-honeypot
+    labels:
+      com.jarnis.honeypot: "1"
     environment:
       HONEYPOT_TOKEN: ${HONEYPOT_TOKEN}
     ports:

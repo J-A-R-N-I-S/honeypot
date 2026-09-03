@@ -115,9 +115,9 @@ Daily including weekends (sensors do not sleep). systemd timer at 04:20 host tim
 curl -fsSL https://jarnis.io/guides/jarnis-honeypot-update.sh -o /usr/local/sbin/jarnis-honeypot-update
 chmod 755 /usr/local/sbin/jarnis-honeypot-update
 
-# units from this repo
-curl -fsSL https://raw.githubusercontent.com/J-A-R-N-I-S/honeypot/main/deploy/systemd/jarnis-honeypot-update.service -o /etc/systemd/system/jarnis-honeypot-update.service
-curl -fsSL https://raw.githubusercontent.com/J-A-R-N-I-S/honeypot/main/deploy/systemd/jarnis-honeypot-update.timer -o /etc/systemd/system/jarnis-honeypot-update.timer
+# systemd units (public copies on jarnis.io/guides)
+curl -fsSL https://jarnis.io/guides/jarnis-honeypot-update.service -o /etc/systemd/system/jarnis-honeypot-update.service
+curl -fsSL https://jarnis.io/guides/jarnis-honeypot-update.timer -o /etc/systemd/system/jarnis-honeypot-update.timer
 systemctl daemon-reload
 systemctl enable --now jarnis-honeypot-update.timer
 ```
