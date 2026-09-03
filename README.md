@@ -21,6 +21,7 @@ docker run -d --name jarnis-honeypot --restart unless-stopped --memory 64m \
 Live sensor uses ~6 MB RAM. A 64 MB limit leaves room for other services without a 20× over-reserve.
 
 3. Check: `ssh user@HOST` fails, `curl http://HOST:8080/` shows the login page, the attempt appears on the dashboard.
+4. Install the host auto-update timer (the container cannot pull Hub). See [Auto-update](#auto-update-docker-hub) or https://jarnis.io/guides/honeypot-auto-update.html
 
 Only **one** environment variable is required. In the app, `${HONEYPOT_TOKEN}` is a placeholder — paste the real secret into `-e HONEYPOT_TOKEN=…`.
 
@@ -99,6 +100,14 @@ After each successful Hub publish, CI updates [`deploy/release.json`](deploy/rel
 
 Customer images are published to **Docker Hub** (`jarnis/honeypot:latest`) by CI when repository secrets are set. GHCR builds remain an internal CI artifact.
 
+The sensor cannot pull Hub itself: it is `--read-only`, has no `docker.sock`, and drops all capabilities. **SENSOR OUTDATED** in the app is UI-only. The host timer is part of a **normal install**. Public guide: https://jarnis.io/guides/honeypot-auto-update.html
+
+Do **not** mount `docker.sock` into the honeypot. Do **not** run Watchtower in or next to this image.
+
+`jarnis-honeypot-update` pulls Hub `latest`, then recreates only JARNIS honeypot containers whose digest changed (label `com.jarnis.honeypot=1` or image `jarnis/honeypot`). Several containers on one host (for example 9022/9023/9080 and 9122/9123/9180) are updated independently. Token/env, published ports, 64m, 0.25 CPU, and the security flags are kept. Unrelated containers are never touched. Hub only — never GHCR.
+
+Daily including weekends (sensors do not sleep). systemd timer at 04:20 host time; cron fallback if there is no systemd.
+
 ### VPS (systemd, preferred)
 
 ```bash
@@ -113,7 +122,15 @@ systemctl daemon-reload
 systemctl enable --now jarnis-honeypot-update.timer
 ```
 
-Optional `/etc/jarnis-honeypot-update.conf`: `NAME`, `IMAGE` (default `jarnis/honeypot:latest`), `ENV_FILE` (default `/root/jarnis-honeypot.env`). The script never prints the env file or token.
+Cron fallback (no systemd):
+
+```bash
+echo '20 4 * * * root /usr/local/sbin/jarnis-honeypot-update' > /etc/cron.d/jarnis-honeypot-update
+```
+
+Disable: `systemctl disable --now jarnis-honeypot-update.timer` (and `rm -f /etc/cron.d/jarnis-honeypot-update` if you used cron).
+
+Optional `/etc/jarnis-honeypot-update.conf`: `NAME` (pin one container; default is every matching honeypot on the host), `IMAGE` (default `jarnis/honeypot:latest`), `ENV_FILE` (used only when `NAME` is set; default `/root/jarnis-honeypot.env`). Without `NAME`, each container keeps its own env from inspect. The script never prints the env file or token.
 
 ### CI secrets (Hub publish)
 

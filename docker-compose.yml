@@ -1,3 +1,6 @@
+# Host auto-update is the systemd timer jarnis-honeypot-update on the VPS,
+# not a sidecar. Do not add Watchtower. Do not mount docker.sock into this service.
+# https://jarnis.io/guides/honeypot-auto-update.html
 # JARNIS capture-only honeypot — copy values from the app Install tab.
 services:
   honeypot:

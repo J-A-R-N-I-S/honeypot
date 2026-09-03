@@ -1,12 +1,12 @@
 [Unit]
-Description=Timer: update jarnis honeypot image from Docker Hub when digest changes
-Documentation=https://github.com/J-A-R-N-I-S/honeypot
+Description=Daily Docker Hub update for JARNIS honeypot containers
+Documentation=https://jarnis.io/guides/honeypot-auto-update.html
 
 [Timer]
-OnBootSec=2min
-OnUnitActiveSec=1min
-AccuracySec=30s
+OnCalendar=*-*-* 04:20:00
 Persistent=true
+OnBootSec=5min
+AccuracySec=5min
 Unit=jarnis-honeypot-update.service
 
 [Install]
