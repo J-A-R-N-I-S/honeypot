@@ -10,6 +10,9 @@ Type=oneshot
 ExecStart=/usr/local/sbin/jarnis-honeypot-update
 # Do not pass HONEYPOT_TOKEN here — token stays in the container env / ENV_FILE.
 Nice=10
+# Temp files (env incl. token, host-key tarball) stay private and owner-only.
+PrivateTmp=yes
+UMask=0077
 
 [Install]
 WantedBy=multi-user.target

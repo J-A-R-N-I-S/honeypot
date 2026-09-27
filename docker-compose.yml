@@ -2,6 +2,10 @@
 # not a sidecar. Do not add Watchtower. Do not mount docker.sock into this service.
 # https://jarnis.io/guides/honeypot-auto-update.html
 # JARNIS capture-only honeypot — copy values from the app Install tab.
+#
+# Ports bind on all interfaces (0.0.0.0 / [::]) on purpose: the decoy must be
+# reachable from the internet. Move the host sshd off port 22 first (see the
+# guide), and note that Docker-published ports bypass ufw.
 services:
   honeypot:
     image: jarnis/honeypot:latest
@@ -9,11 +13,17 @@ services:
     restart: unless-stopped
     mem_limit: 64m
     cpus: 0.25
+    pids_limit: 64
     read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     tmpfs:
-      - /tmp
+      - /tmp:size=8m,mode=1777
     volumes:
-      - hp-state:/var/lib/jarnis-honeypot
+      # SSH host key (ssh_host_ecdsa) — keeps the fingerprint across recreates.
+      - jarnis-honeypot-state:/var/lib/jarnis-honeypot
     labels:
       com.jarnis.honeypot: "1"
     environment:
@@ -24,4 +34,16 @@ services:
       - "${HTTP_HOST_PORT:-8080}:8080"
 
 volumes:
-  hp-state:
+  jarnis-honeypot-state:
+    # Fixed name (no compose project prefix) so `docker run` and compose
+    # installs share the same state volume. One instance per host; for more
+    # instances give each its own volume name (see README).
+    #
+    # Migration: older versions of this file used `hp-state`, which compose
+    # created as `<project>_hp-state`. That volume is no longer used, so an
+    # existing compose install shows a NEW SSH host-key fingerprint once after
+    # this change; from then on it stays stable. (The old host updater dropped
+    # `hp-state` on recreate anyway.) To keep the old key instead, copy
+    # ssh_host_ecdsa from `<project>_hp-state` into `jarnis-honeypot-state`
+    # before `docker compose up -d`.
+    name: jarnis-honeypot-state

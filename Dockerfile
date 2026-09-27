@@ -12,7 +12,8 @@ RUN short=$(printf '%s' "$VERSION" | cut -c1-12) \
 
 FROM alpine:3.20
 RUN apk add --no-cache ca-certificates \
-    && mkdir -p /var/lib/jarnis-honeypot
+    && mkdir -p /var/lib/jarnis-honeypot \
+    && chmod 700 /var/lib/jarnis-honeypot
 COPY --from=build /out/jarnis-honeypot /jarnis-honeypot
 RUN chmod 755 /jarnis-honeypot \
     && ln -sf /jarnis-honeypot /usr/local/bin/jarnis-honeypot \
