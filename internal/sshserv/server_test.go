@@ -2,7 +2,9 @@ package sshserv
 
 import (
 	"net"
+	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -150,5 +152,107 @@ func TestHostKeyPersistsAcrossLoads(t *testing.T) {
 	if ssh.FingerprintSHA256(a.PublicKey()) != ssh.FingerprintSHA256(b.PublicKey()) {
 		t.Fatalf("host key changed between loads: %s vs %s",
 			ssh.FingerprintSHA256(a.PublicKey()), ssh.FingerprintSHA256(b.PublicKey()))
+	}
+}
+
+func fp(t *testing.T, s ssh.Signer) string {
+	t.Helper()
+	return ssh.FingerprintSHA256(s.PublicKey())
+}
+
+func TestHostKeyWriteIsAtomicNoTempLeftovers(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "ssh_host_ecdsa")
+	if _, err := loadOrCreateHostKey(path); err != nil {
+		t.Fatal(err)
+	}
+	st, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Mode().Perm() != 0o600 {
+		t.Fatalf("key mode %v, want 0600", st.Mode().Perm())
+	}
+	ents, _ := os.ReadDir(dir)
+	if len(ents) != 1 {
+		names := []string{}
+		for _, e := range ents {
+			names = append(names, e.Name())
+		}
+		t.Fatalf("unexpected files in state dir: %v", names)
+	}
+}
+
+func TestHostKeyCorruptIsBackedUpAndReplaced(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "ssh_host_ecdsa")
+	garbage := []byte("not a key\n")
+	if err := os.WriteFile(path, garbage, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	a, err := loadOrCreateHostKey(path)
+	if err != nil {
+		t.Fatalf("corrupt key must not be fatal: %v", err)
+	}
+	var bak string
+	ents, _ := os.ReadDir(dir)
+	for _, e := range ents {
+		if strings.HasPrefix(e.Name(), "ssh_host_ecdsa.bad-") {
+			bak = filepath.Join(dir, e.Name())
+		}
+	}
+	if bak == "" {
+		t.Fatal("no backup of the corrupt key")
+	}
+	if b, _ := os.ReadFile(bak); string(b) != string(garbage) {
+		t.Fatalf("backup content changed: %q", b)
+	}
+	// the replacement is persisted and stable
+	b, err := loadOrCreateHostKey(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fp(t, a) != fp(t, b) {
+		t.Fatalf("replacement key not persisted: %s vs %s", fp(t, a), fp(t, b))
+	}
+}
+
+func TestHostKeyUnreadableIsNotFatal(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can read mode 0000 files")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "ssh_host_ecdsa")
+	if err := os.WriteFile(path, []byte("x"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	a, err := loadOrCreateHostKey(path)
+	if err != nil {
+		t.Fatalf("unreadable key must not be fatal: %v", err)
+	}
+	b, err := loadOrCreateHostKey(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fp(t, a) != fp(t, b) {
+		t.Fatal("replacement for unreadable key not persisted")
+	}
+}
+
+func TestHostKeyReadOnlyDirFallsBackToEphemeral(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	if _, err := loadOrCreateHostKey(filepath.Join(dir, "ssh_host_ecdsa")); err != nil {
+		t.Fatalf("read-only state dir must not be fatal: %v", err)
+	}
+	ents, _ := os.ReadDir(dir)
+	if len(ents) != 0 {
+		t.Fatalf("nothing should be written to a read-only dir, got %d entries", len(ents))
 	}
 }

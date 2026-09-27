@@ -8,8 +8,10 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"net"
 	"os"
@@ -194,13 +196,30 @@ func rejectKey(conn ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, erro
 	return nil, fmt.Errorf("permission denied")
 }
 
+// loadOrCreateHostKey returns the persisted host key or creates one. It never
+// fails because of the key file: an unreadable or corrupt key is moved aside
+// (path + ".bad-<unix time>") and replaced, and a key that cannot be written
+// is used in memory only. A returned error means key generation itself failed.
 func loadOrCreateHostKey(path string) (ssh.Signer, error) {
 	if path == "" {
 		path = "/var/lib/jarnis-honeypot/ssh_host_ecdsa"
 	}
-	if b, err := os.ReadFile(path); err == nil {
-		return ssh.ParsePrivateKey(b)
+	b, err := os.ReadFile(path)
+	switch {
+	case err == nil:
+		signer, perr := ssh.ParsePrivateKey(b)
+		if perr == nil {
+			return signer, nil
+		}
+		log.Printf("ssh host key %s is corrupt (%v) — keeping a backup and generating a new key", path, perr)
+		backupHostKey(path)
+	case errors.Is(err, fs.ErrNotExist):
+		// first start
+	default:
+		log.Printf("ssh host key %s is unreadable (%v) — keeping a backup and generating a new key", path, err)
+		backupHostKey(path)
 	}
+
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, err
@@ -213,14 +232,64 @@ func loadOrCreateHostKey(path string) (ssh.Signer, error) {
 	// Persist when possible; otherwise ephemeral key (read-only root without
 	// a volume on /var/lib/jarnis-honeypot). An ephemeral key changes on every
 	// container recreate, which lets scanners fingerprint the sensor.
-	err = os.MkdirAll(filepath.Dir(path), 0o700)
-	if err == nil {
-		err = os.WriteFile(path, pemBytes, 0o600)
-	}
-	if err != nil {
+	if err := writeFileAtomic(path, pemBytes, 0o600); err != nil {
 		log.Printf("ssh host key not persisted (%v) — mount a volume on %s to keep the fingerprint across recreates", err, filepath.Dir(path))
 	} else {
 		log.Printf("ssh host key created at %s", path)
 	}
 	return ssh.ParsePrivateKey(pemBytes)
+}
+
+// backupHostKey moves an unusable key out of the way so it is not lost and
+// the replacement can be written. Best effort.
+func backupHostKey(path string) {
+	bak := fmt.Sprintf("%s.bad-%d", path, time.Now().Unix())
+	if err := os.Rename(path, bak); err != nil {
+		log.Printf("ssh host key backup %s failed: %v", bak, err)
+		return
+	}
+	log.Printf("ssh host key backup: %s", bak)
+}
+
+// writeFileAtomic writes data to a temp file in the target directory, fsyncs
+// it, renames it over path and fsyncs the directory, so a crash never leaves
+// a truncated key behind.
+func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	f, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	ok := false
+	defer func() {
+		if !ok {
+			_ = f.Close()
+			_ = os.Remove(tmp)
+		}
+	}()
+	if err := f.Chmod(perm); err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return err
+	}
+	ok = true
+	if d, err := os.Open(dir); err == nil {
+		_ = d.Sync()
+		_ = d.Close()
+	}
+	return nil
 }
