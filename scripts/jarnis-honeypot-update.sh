@@ -6,20 +6,33 @@
 #
 # Discover: label com.jarnis.honeypot=1, or Config.Image is Hub
 # jarnis/honeypot[:tag]. Never GHCR. Never unrelated containers.
-# Multiple containers on one host are updated independently (ports/env and
-# mounts kept). The SSH host key lives in /var/lib/jarnis-honeypot; if the old
-# container had no mount there, a named volume is added so the fingerprint
-# survives future recreates (jarnis-honeypot-state for the container named
-# jarnis-honeypot, jarnis-honeypot-state-<name> for any other container).
+# Multiple containers on one host are updated independently.
 #
-# Ubuntu install (systemd timer, daily including weekends):
-#   curl -fsSL https://jarnis.io/guides/jarnis-honeypot-update.sh -o /usr/local/sbin/jarnis-honeypot-update
-#   chmod 755 /usr/local/sbin/jarnis-honeypot-update
-#   curl -fsSL https://jarnis.io/guides/jarnis-honeypot-update.service \
-#     -o /etc/systemd/system/jarnis-honeypot-update.service
-#   curl -fsSL https://jarnis.io/guides/jarnis-honeypot-update.timer \
-#     -o /etc/systemd/system/jarnis-honeypot-update.timer
-#   systemctl daemon-reload && systemctl enable --now jarnis-honeypot-update.timer
+# Carried over from the old container (docker inspect):
+#   env (incl. HONEYPOT_TOKEN), published ports (tcp/udp, host IP incl. IPv6),
+#   volumes and bind mounts (ro/rw), network mode, labels, log driver/options,
+#   hostname/domainname (if set explicitly), --dns/--dns-search/--dns-option,
+#   --add-host.
+# Always set to the hardened defaults (not carried over):
+#   --restart unless-stopped, --memory 64m, --cpus 0.25, --pids-limit 64,
+#   --read-only, --cap-drop ALL, --security-opt no-new-privileges:true,
+#   --tmpfs /tmp:size=8m,mode=1777.
+# Not carried over: additional networks / aliases / static IPs, user,
+#   entrypoint/cmd, workdir, sysctls, ulimits, devices, other tmpfs mounts.
+#
+# The SSH host key lives in /var/lib/jarnis-honeypot. If the old container had
+# no mount there, a named volume is added so the fingerprint survives future
+# recreates (jarnis-honeypot-state for the container named jarnis-honeypot,
+# jarnis-honeypot-state-<name> for any other container).
+#
+# Safety: one run at a time (flock on $LOCK_FILE). The old container is only
+# removed after the new one has been running for $HEALTH_WAIT seconds without
+# a restart; otherwise, on any error, or on SIGINT/SIGTERM, the old container
+# (tracked by ID, never by name) is renamed back and restarted.
+#
+# Ubuntu install (systemd timer, daily including weekends). Verify the
+# SHA-256 sums published in the guide / README before installing:
+#   https://jarnis.io/guides/honeypot-auto-update.html
 #
 # Cron fallback (no systemd):
 #   echo '20 4 * * * root /usr/local/sbin/jarnis-honeypot-update' > /etc/cron.d/jarnis-honeypot-update
@@ -31,9 +44,13 @@
 #   IMAGE=jarnis/honeypot:latest
 #   NAME=jarnis-honeypot          # optional: only this container
 #   ENV_FILE=/root/jarnis-honeypot.env  # used only when NAME is set
+#   HEALTH_WAIT=8                 # seconds the new container must stay up
+#   LOCK_FILE=/run/lock/jarnis-honeypot-update.lock
 set -eu
-# No globbing: mount paths and port specs are word-split on purpose below.
+# No globbing: port, mount and option lists are word-split on purpose below.
 set -f
+# Temp files hold the token / host key: owner-only.
+umask 077
 
 CONF=/etc/jarnis-honeypot-update.conf
 if [ -f "$CONF" ]; then
@@ -43,12 +60,68 @@ fi
 IMAGE=${IMAGE:-jarnis/honeypot:latest}
 NAME=${NAME:-}
 ENV_FILE=${ENV_FILE:-/root/jarnis-honeypot.env}
+HEALTH_WAIT=${HEALTH_WAIT:-8}
+LOCK_FILE=${LOCK_FILE:-/run/lock/jarnis-honeypot-update.lock}
 STATE_DIR=/var/lib/jarnis-honeypot
 
 log() { echo "$(date -u +'%Y-%m-%dT%H:%M:%SZ') $*"; }
 
+case "$HEALTH_WAIT" in
+    ''|*[!0-9]*) log "HEALTH_WAIT must be a number of seconds (got $HEALTH_WAIT)"; exit 1 ;;
+esac
+
+# --- rollback state for the recreate in progress (IDs, never names) ---------
+RB_NAME=""        # original container name
+RB_OLD=""         # original container ID (set once it has been stopped)
+RB_NEW=""         # ID of the container created by this run
+RB_WAS_RUNNING=0
+WORKDIR=""
+
+rollback() {
+    if [ -n "$RB_NEW" ]; then
+        docker rm -f "$RB_NEW" >/dev/null 2>&1 || log "WARNING: could not remove new container $RB_NEW"
+    fi
+    if [ -n "$RB_OLD" ]; then
+        cur=$(docker inspect --format '{{.Name}}' "$RB_OLD" 2>/dev/null | sed 's#^/##' || true)
+        if [ -n "$cur" ] && [ "$cur" != "$RB_NAME" ]; then
+            docker rename "$RB_OLD" "$RB_NAME" >/dev/null 2>&1 \
+                || log "WARNING: could not rename $RB_OLD back to $RB_NAME"
+        fi
+        if [ "$RB_WAS_RUNNING" = 1 ]; then
+            docker start "$RB_OLD" >/dev/null 2>&1 \
+                || log "WARNING: could not start previous container $RB_NAME ($RB_OLD)"
+        fi
+    fi
+    RB_NAME=""
+    RB_OLD=""
+    RB_NEW=""
+    RB_WAS_RUNNING=0
+}
+
+# shellcheck disable=SC2329  # invoked via trap
+cleanup() {
+    if [ -n "$WORKDIR" ]; then
+        rm -rf "$WORKDIR"
+    fi
+}
+
+# shellcheck disable=SC2329  # invoked via trap
+on_signal() {
+    trap - INT TERM
+    if [ -n "$RB_OLD" ] || [ -n "$RB_NEW" ]; then
+        log "interrupted — restoring $RB_NAME"
+        rollback
+    else
+        log "interrupted"
+    fi
+    exit 1
+}
+
+trap cleanup EXIT
+trap on_signal INT TERM
+
 hub_image() {
-    img=$(printf '%s' "$1" | tr 'A-Z' 'a-z')
+    img=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
     case "$img" in
         *ghcr.io*) return 1 ;;
         jarnis/honeypot|jarnis/honeypot:*|jarnis/honeypot@*|docker.io/jarnis/honeypot|docker.io/jarnis/honeypot:*|docker.io/jarnis/honeypot@*) return 0 ;;
@@ -75,41 +148,101 @@ container_envfile() {
         chmod 600 "$tmp"
         return 0
     fi
-    docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$cid" \
-        | awk -F= '
+    if ! raw=$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$cid"); then
+        log "skip $cname — docker inspect (env) failed"
+        return 1
+    fi
+    printf '%s\n' "$raw" | awk -F= '
             $1=="PATH" || $1=="HOME" || $1=="HOSTNAME" || $1=="TERM" { next }
             NF>=1 && $1!="" { print }
           ' > "$tmp"
     chmod 600 "$tmp"
     if ! grep -q '^HONEYPOT_TOKEN=' "$tmp" 2>/dev/null; then
         log "skip $cname — no HONEYPOT_TOKEN in container env"
-        rm -f "$tmp"
         return 1
     fi
     return 0
 }
 
+# One "-p" per binding. Keeps the protocol (22/tcp, 53/udp) and the host IP;
+# IPv6 host addresses are bracketed ([::]:22:22/tcp).
 published_ports() {
-    cid=$1
-    docker inspect --format '{{range $p, $c := .HostConfig.PortBindings}}{{range $c}}-p {{if .HostIp}}{{.HostIp}}:{{end}}{{.HostPort}}:{{$p}} {{end}}{{end}}' "$cid" \
-        | sed 's#/tcp##g; s#/udp##g'
+    raw=$(docker inspect --format '{{range $p, $c := .HostConfig.PortBindings}}{{range $c}}{{.HostIp}}|{{.HostPort}}|{{$p}}{{println}}{{end}}{{end}}' "$1") || return 1
+    printf '%s\n' "$raw" | awk -F'|' '
+        NF != 3 || $3 == "" { next }
+        {
+            ip = $1
+            if (ip ~ /:/) ip = "[" ip "]"
+            if (ip != "") printf "-p %s:%s:%s\n", ip, $2, $3
+            else if ($2 != "") printf "-p %s:%s\n", $2, $3
+            else printf "-p %s\n", $3
+        }'
 }
 
-# Prints one "-v SRC:DST[:ro]" per mount of the old container (named volumes,
-# anonymous volumes by their generated name, and bind mounts). tmpfs mounts
-# are skipped (the fixed --tmpfs /tmp below replaces them). Returns 1 on a
-# path that cannot be passed through -v safely (whitespace, comma, colon).
+# One "-v SRC:DST[:ro]" per mount (named volumes, anonymous volumes by their
+# generated name, bind mounts). tmpfs mounts are skipped (the fixed
+# --tmpfs /tmp replaces them). Exit 2: inspect failed. Exit 1: a path that
+# cannot be passed through -v safely (whitespace, comma, colon).
 carried_mounts() {
+    raw=$(docker inspect --format '{{range .Mounts}}{{.Type}}|{{if eq .Type "volume"}}{{.Name}}{{else}}{{.Source}}{{end}}|{{.Destination}}|{{.RW}}{{println}}{{end}}' "$1") || return 2
+    printf '%s\n' "$raw" | awk -F'|' '
+        $0 == "" { next }
+        $1 != "volume" && $1 != "bind" { next }
+        $2 == "" || $3 == "" { bad = 1; next }
+        $2 ~ /[[:space:],:]/ || $3 ~ /[[:space:],:]/ { bad = 1; next }
+        { printf "-v %s:%s%s\n", $2, $3, ($4 == "false" ? ":ro" : "") }
+        END { exit bad }
+      '
+}
+
+# Network mode, hostname/domainname (only if set explicitly), log driver and
+# options, DNS settings and extra hosts. Exit 2: inspect failed. Exit 1: a
+# value with whitespace (cannot be word-split safely).
+carried_options() {
     cid=$1
-    docker inspect --format '{{range .Mounts}}{{.Type}}|{{if eq .Type "volume"}}{{.Name}}{{else}}{{.Source}}{{end}}|{{.Destination}}|{{.RW}}{{println}}{{end}}' "$cid" \
-        | awk -F'|' '
-            NF == 0 || $0 == "" { next }
-            $1 != "volume" && $1 != "bind" { next }
-            $2 == "" || $3 == "" { bad = 1; next }
-            $2 ~ /[[:space:],:]/ || $3 ~ /[[:space:],:]/ { bad = 1; next }
-            { printf "-v %s:%s%s\n", $2, $3, ($4 == "false" ? ":ro" : "") }
-            END { exit bad }
-          '
+    daemon_log=$(docker info --format '{{.LoggingDriver}}' 2>/dev/null || true)
+    raw=$(docker inspect --format 'net|{{.HostConfig.NetworkMode}}
+host|{{.Config.Hostname}}
+domain|{{.Config.Domainname}}
+logdrv|{{.HostConfig.LogConfig.Type}}
+{{range $k, $v := .HostConfig.LogConfig.Config}}logopt|{{$k}}={{$v}}
+{{end}}{{range .HostConfig.Dns}}dns|{{.}}
+{{end}}{{range .HostConfig.DnsSearch}}dnssearch|{{.}}
+{{end}}{{range .HostConfig.DnsOptions}}dnsopt|{{.}}
+{{end}}{{range .HostConfig.ExtraHosts}}addhost|{{.}}
+{{end}}' "$cid") || return 2
+    printf '%s\n' "$raw" | awk -F'|' -v short="$(printf '%.12s' "$cid")" -v dlog="$daemon_log" '
+        $0 == "" { next }
+        {
+            k = $1; v = substr($0, length(k) + 2)
+            if (v == "") next
+            if (v ~ /[[:space:]]/) { bad = 1; next }
+        }
+        k == "net"      { if (v != "default" && v != "bridge") print "--network " v; next }
+        k == "host"     { if (v != short) print "--hostname " v; next }
+        k == "domain"   { print "--domainname " v; next }
+        k == "logdrv"   { if (v != dlog) print "--log-driver " v; next }
+        k == "logopt"   { print "--log-opt " v; next }
+        k == "dns"      { print "--dns " v; next }
+        k == "dnssearch"{ print "--dns-search " v; next }
+        k == "dnsopt"   { print "--dns-option " v; next }
+        k == "addhost"  { print "--add-host " v; next }
+        END { exit bad }
+      '
+}
+
+# Labels set on the container (not inherited from its image) as a label file.
+# com.jarnis.honeypot is always set by recreate itself.
+container_labels() {
+    cid=$1
+    out=$2
+    # shellcheck disable=SC2016  # Go template, not shell expansion
+    fmt='{{range $k, $v := .Config.Labels}}{{$k}}={{$v}}{{println}}{{end}}'
+    img=$(docker inspect --format '{{.Image}}' "$cid") || return 1
+    docker inspect --format "$fmt" "$cid" > "$out.c" || return 1
+    docker image inspect --format "$fmt" "$img" > "$out.i" 2>/dev/null || : > "$out.i"
+    grep -vxF -f "$out.i" "$out.c" | grep -v '^com\.jarnis\.honeypot=' | grep -v '^$' > "$out" || true
+    rm -f "$out.c" "$out.i"
 }
 
 default_state_volume() {
@@ -126,23 +259,47 @@ recreate() {
     cname=$2
     new_id=$3
 
-    ports=$(published_ports "$cid")
+    if ! ports=$(published_ports "$cid"); then
+        log "skip $cname — docker inspect (ports) failed"
+        return 1
+    fi
     if [ -z "$(printf '%s' "$ports" | tr -d '[:space:]')" ]; then
         log "skip $cname — no published ports"
         return 1
     fi
-    tmpenv=$(mktemp /tmp/jarnis-hp-env.XXXXXX)
-    chmod 600 "$tmpenv"
-    if ! container_envfile "$cid" "$cname" "$tmpenv"; then
-        rm -f "$tmpenv"
+    envf="$WORKDIR/env"
+    rm -f "$envf"
+    if ! container_envfile "$cid" "$cname" "$envf"; then
+        return 1
+    fi
+    rc=0
+    mounts=$(carried_mounts "$cid") || rc=$?
+    if [ "$rc" -eq 2 ]; then
+        log "skip $cname — docker inspect (mounts) failed"
+        return 1
+    elif [ "$rc" -ne 0 ]; then
+        log "skip $cname — mount path not supported by the updater (whitespace, comma or colon)"
+        return 1
+    fi
+    rc=0
+    opts=$(carried_options "$cid") || rc=$?
+    if [ "$rc" -eq 2 ]; then
+        log "skip $cname — docker inspect (options) failed"
+        return 1
+    elif [ "$rc" -ne 0 ]; then
+        log "skip $cname — network/log/DNS option with whitespace not supported by the updater"
+        return 1
+    fi
+    labelf="$WORKDIR/labels"
+    if ! container_labels "$cid" "$labelf"; then
+        log "skip $cname — docker inspect (labels) failed"
+        return 1
+    fi
+    if ! running=$(docker inspect --format '{{.State.Running}}' "$cid"); then
+        log "skip $cname — docker inspect (state) failed"
         return 1
     fi
 
-    if ! mounts=$(carried_mounts "$cid"); then
-        log "skip $cname — mount path not supported by the updater (whitespace, comma or colon)"
-        rm -f "$tmpenv"
-        return 1
-    fi
     migrate_key=0
     if ! printf '%s\n' "$mounts" | grep -q ":${STATE_DIR}\(:ro\)\{0,1\}\$"; then
         vol=$(default_state_volume "$cname")
@@ -153,48 +310,86 @@ recreate() {
 
     old="${cname}.jarnis-prev.$$"
     log "updating $cname"
-    docker stop "$cname" >/dev/null
-    docker rename "$cname" "$old"
-    # word-splitting of ports and mounts is intentional (docker -p / -v repeat)
+    RB_NAME=$cname
+    RB_WAS_RUNNING=0
+    [ "$running" = "true" ] && RB_WAS_RUNNING=1
+    if ! docker stop "$cid" >/dev/null; then
+        log "abort $cname — docker stop failed, container left as is"
+        if [ "$RB_WAS_RUNNING" = 1 ]; then
+            docker start "$cid" >/dev/null 2>&1 || true
+        fi
+        RB_NAME=""
+        return 1
+    fi
+    # From here on rollback() restores the original, addressed by its ID.
+    RB_OLD=$cid
+    if ! docker rename "$cid" "$old" >/dev/null; then
+        log "abort $cname — docker rename failed"
+        rollback
+        return 1
+    fi
+    # word-splitting of ports/mounts/opts is intentional (repeated flags)
     # shellcheck disable=SC2086
-    if docker create --name "$cname" --restart unless-stopped \
+    if ! new_cid=$(docker create --name "$cname" --restart unless-stopped \
         --memory 64m --cpus 0.25 --pids-limit 64 \
         --read-only --cap-drop ALL --security-opt no-new-privileges:true \
         --tmpfs /tmp:size=8m,mode=1777 \
+        --label-file "$labelf" \
         --label com.jarnis.honeypot=1 \
-        --env-file "$tmpenv" \
+        --env-file "$envf" \
+        $opts \
         $ports \
         $mounts \
-        "$IMAGE" >/dev/null; then
-        if [ "$migrate_key" -eq 1 ]; then
-            # Old container without a state mount: if it was not --read-only,
-            # its host key sits in its writable layer. Seed the new volume so
-            # the fingerprint does not change. Best effort; a fresh volume that
-            # stays empty makes the sensor generate (and now persist) a key.
-            keytar=$(mktemp /tmp/jarnis-hp-key.XXXXXX)
-            chmod 600 "$keytar"
-            if docker cp "$old:${STATE_DIR}/ssh_host_ecdsa" - >"$keytar" 2>/dev/null \
-                && [ -s "$keytar" ] \
-                && docker cp - "$cname:${STATE_DIR}/" <"$keytar" 2>/dev/null; then
-                log "carried SSH host key from $cname into the state volume"
-            else
-                log "no persisted SSH host key in $cname — a new key is generated once and kept from now on"
-            fi
-            rm -f "$keytar"
-        fi
-        if docker start "$cname" >/dev/null; then
-            docker rm "$old" >/dev/null
-            rm -f "$tmpenv"
-            log "recreated $cname ($new_id)"
-            return 0
-        fi
+        "$IMAGE") || [ -z "$new_cid" ]; then
+        log "recreate failed $cname — docker create failed"
+        rollback
+        log "previous container $cname restored"
+        return 1
     fi
-    docker rm -f "$cname" >/dev/null 2>&1 || true
-    docker rename "$old" "$cname" >/dev/null 2>&1 || true
-    docker start "$cname" >/dev/null 2>&1 || true
-    rm -f "$tmpenv"
-    log "recreate failed $cname — previous container restored"
-    return 1
+    RB_NEW=$new_cid
+    rm -f "$envf"
+
+    if [ "$migrate_key" -eq 1 ]; then
+        # Old container without a state mount: if it was not --read-only,
+        # its host key sits in its writable layer. Seed the new volume so
+        # the fingerprint does not change. Best effort; a fresh volume that
+        # stays empty makes the sensor generate (and now persist) a key.
+        keytar="$WORKDIR/key.tar"
+        if docker cp "$cid:${STATE_DIR}/ssh_host_ecdsa" - >"$keytar" 2>/dev/null \
+            && [ -s "$keytar" ] \
+            && docker cp - "$new_cid:${STATE_DIR}/" <"$keytar" 2>/dev/null; then
+            log "carried SSH host key from $cname into the state volume"
+        else
+            log "no persisted SSH host key in $cname — a new key is generated once and kept from now on"
+        fi
+        rm -f "$keytar"
+    fi
+
+    if ! docker start "$new_cid" >/dev/null; then
+        log "recreate failed $cname — new container did not start"
+        rollback
+        log "previous container $cname restored"
+        return 1
+    fi
+    # Health gate: the new container must still be running, without a
+    # restart, after HEALTH_WAIT seconds. Only then the old one is removed.
+    sleep "$HEALTH_WAIT"
+    st=$(docker inspect --format '{{.State.Running}} {{.RestartCount}}' "$new_cid" 2>/dev/null || true)
+    if [ "$st" != "true 0" ]; then
+        log "recreate failed $cname — new container not healthy after ${HEALTH_WAIT}s (running/restarts: ${st:-gone})"
+        docker logs --tail 10 "$new_cid" 2>&1 | sed 's/^/  | /' || true
+        rollback
+        log "previous container $cname restored"
+        return 1
+    fi
+    if ! docker rm "$cid" >/dev/null; then
+        log "WARNING: new $cname is running, but the previous container $cid could not be removed"
+    fi
+    RB_NAME=""
+    RB_OLD=""
+    RB_NEW=""
+    log "recreated $cname ($new_id)"
+    return 0
 }
 
 if ! command -v docker >/dev/null 2>&1; then
@@ -208,6 +403,21 @@ case "$IMAGE" in
         exit 1
         ;;
 esac
+
+# One run at a time (timer and manual run). The lock must not live in /tmp:
+# the systemd unit uses PrivateTmp=yes.
+if command -v flock >/dev/null 2>&1; then
+    mkdir -p "$(dirname "$LOCK_FILE")"
+    exec 9>"$LOCK_FILE"
+    if ! flock -n 9; then
+        log "another jarnis-honeypot-update run holds $LOCK_FILE — exit"
+        exit 0
+    fi
+else
+    log "WARNING: flock not found — running without a lock"
+fi
+
+WORKDIR=$(mktemp -d "${TMPDIR:-/tmp}/jarnis-hp.XXXXXX")
 
 if ! docker pull "$IMAGE" >/dev/null; then
     log "pull failed $IMAGE"
