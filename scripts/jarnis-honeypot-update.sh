@@ -26,9 +26,13 @@
 # jarnis-honeypot-state-<name> for any other container).
 #
 # Safety: one run at a time (flock on $LOCK_FILE). The old container is only
-# removed after the new one has been running for $HEALTH_WAIT seconds without
-# a restart; otherwise, on any error, or on SIGINT/SIGTERM, the old container
-# (tracked by ID, never by name) is renamed back and restarted.
+# removed after the new one has been running for $HEALTH_WAIT seconds (min 3)
+# without a restart; otherwise, on any error, or on SIGHUP/SIGINT/SIGTERM, the
+# old container (tracked by ID, never by name) is renamed back and restarted.
+# Exit status: 0 = every matching container is up to date, recreated or
+# skipped by policy; 1 = at least one recreate failed (see the log).
+# com.docker.compose.* labels are not carried over: after an update a
+# compose-managed sensor is a plain container (see README).
 #
 # Ubuntu install (systemd timer, daily including weekends). Verify the
 # SHA-256 sums published in the guide / README before installing:
@@ -44,8 +48,8 @@
 #   IMAGE=jarnis/honeypot:latest
 #   NAME=jarnis-honeypot          # optional: only this container
 #   ENV_FILE=/root/jarnis-honeypot.env  # used only when NAME is set
-#   HEALTH_WAIT=8                 # seconds the new container must stay up
-#   LOCK_FILE=/run/lock/jarnis-honeypot-update.lock
+#   HEALTH_WAIT=8                 # seconds the new container must stay up (min 3)
+#   LOCK_FILE=/run/jarnis-honeypot-update.lock
 set -eu
 # No globbing: port, mount and option lists are word-split on purpose below.
 set -f
@@ -61,7 +65,7 @@ IMAGE=${IMAGE:-jarnis/honeypot:latest}
 NAME=${NAME:-}
 ENV_FILE=${ENV_FILE:-/root/jarnis-honeypot.env}
 HEALTH_WAIT=${HEALTH_WAIT:-8}
-LOCK_FILE=${LOCK_FILE:-/run/lock/jarnis-honeypot-update.lock}
+LOCK_FILE=${LOCK_FILE:-/run/jarnis-honeypot-update.lock}
 STATE_DIR=/var/lib/jarnis-honeypot
 
 log() { echo "$(date -u +'%Y-%m-%dT%H:%M:%SZ') $*"; }
@@ -69,6 +73,10 @@ log() { echo "$(date -u +'%Y-%m-%dT%H:%M:%SZ') $*"; }
 case "$HEALTH_WAIT" in
     ''|*[!0-9]*) log "HEALTH_WAIT must be a number of seconds (got $HEALTH_WAIT)"; exit 1 ;;
 esac
+if [ "$HEALTH_WAIT" -lt 3 ]; then
+    log "WARNING: HEALTH_WAIT=$HEALTH_WAIT is too short to catch a crash loop — using 3"
+    HEALTH_WAIT=3
+fi
 
 # --- rollback state for the recreate in progress (IDs, never names) ---------
 RB_NAME=""        # original container name
@@ -77,25 +85,46 @@ RB_NEW=""         # ID of the container created by this run
 RB_WAS_RUNNING=0
 WORKDIR=""
 
+# Returns 0 only if the original container is back under its name (and
+# running, if it was running before).
 rollback() {
+    rb_ok=0
     if [ -n "$RB_NEW" ]; then
         docker rm -f "$RB_NEW" >/dev/null 2>&1 || log "WARNING: could not remove new container $RB_NEW"
     fi
     if [ -n "$RB_OLD" ]; then
         cur=$(docker inspect --format '{{.Name}}' "$RB_OLD" 2>/dev/null | sed 's#^/##' || true)
-        if [ -n "$cur" ] && [ "$cur" != "$RB_NAME" ]; then
-            docker rename "$RB_OLD" "$RB_NAME" >/dev/null 2>&1 \
-                || log "WARNING: could not rename $RB_OLD back to $RB_NAME"
+        if [ -z "$cur" ]; then
+            log "ERROR: previous container $RB_OLD no longer exists"
+            rb_ok=1
+        elif [ "$cur" != "$RB_NAME" ]; then
+            if ! docker rename "$RB_OLD" "$RB_NAME" >/dev/null 2>&1; then
+                log "ERROR: could not rename $RB_OLD back to $RB_NAME"
+                rb_ok=1
+            fi
         fi
-        if [ "$RB_WAS_RUNNING" = 1 ]; then
-            docker start "$RB_OLD" >/dev/null 2>&1 \
-                || log "WARNING: could not start previous container $RB_NAME ($RB_OLD)"
+        if [ "$rb_ok" -eq 0 ] && [ "$RB_WAS_RUNNING" = 1 ]; then
+            if ! docker start "$RB_OLD" >/dev/null 2>&1; then
+                log "ERROR: could not start previous container $RB_NAME ($RB_OLD)"
+                rb_ok=1
+            fi
         fi
     fi
     RB_NAME=""
     RB_OLD=""
     RB_NEW=""
     RB_WAS_RUNNING=0
+    return "$rb_ok"
+}
+
+# rollback + log the actual outcome
+restore_previous() {
+    rname=$RB_NAME
+    if rollback; then
+        log "previous container $rname restored"
+    else
+        log "ERROR: previous container $rname NOT fully restored — check 'docker ps -a'"
+    fi
 }
 
 # shellcheck disable=SC2329  # invoked via trap
@@ -107,10 +136,10 @@ cleanup() {
 
 # shellcheck disable=SC2329  # invoked via trap
 on_signal() {
-    trap - INT TERM
+    trap - HUP INT TERM
     if [ -n "$RB_OLD" ] || [ -n "$RB_NEW" ]; then
         log "interrupted — restoring $RB_NAME"
-        rollback
+        restore_previous
     else
         log "interrupted"
     fi
@@ -118,7 +147,7 @@ on_signal() {
 }
 
 trap cleanup EXIT
-trap on_signal INT TERM
+trap on_signal HUP INT TERM
 
 hub_image() {
     img=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
@@ -159,7 +188,7 @@ container_envfile() {
     chmod 600 "$tmp"
     if ! grep -q '^HONEYPOT_TOKEN=' "$tmp" 2>/dev/null; then
         log "skip $cname — no HONEYPOT_TOKEN in container env"
-        return 1
+        return 2
     fi
     return 0
 }
@@ -218,9 +247,10 @@ logdrv|{{.HostConfig.LogConfig.Type}}
             if (v == "") next
             if (v ~ /[[:space:]]/) { bad = 1; next }
         }
-        k == "net"      { if (v != "default" && v != "bridge") print "--network " v; next }
-        k == "host"     { if (v != short) print "--hostname " v; next }
-        k == "domain"   { print "--domainname " v; next }
+        k == "net"      { if (v == "host" || v ~ /^container:/) sharedns = 1
+                          if (v != "default" && v != "bridge") print "--network " v; next }
+        k == "host"     { if (v != short && !sharedns) print "--hostname " v; next }
+        k == "domain"   { if (!sharedns) print "--domainname " v; next }
         k == "logdrv"   { if (v != dlog) print "--log-driver " v; next }
         k == "logopt"   { print "--log-opt " v; next }
         k == "dns"      { print "--dns " v; next }
@@ -232,7 +262,8 @@ logdrv|{{.HostConfig.LogConfig.Type}}
 }
 
 # Labels set on the container (not inherited from its image) as a label file.
-# com.jarnis.honeypot is always set by recreate itself.
+# com.jarnis.honeypot is always set by recreate itself; com.docker.compose.*
+# labels are dropped (the recreated container is not managed by compose).
 container_labels() {
     cid=$1
     out=$2
@@ -241,7 +272,7 @@ container_labels() {
     img=$(docker inspect --format '{{.Image}}' "$cid") || return 1
     docker inspect --format "$fmt" "$cid" > "$out.c" || return 1
     docker image inspect --format "$fmt" "$img" > "$out.i" 2>/dev/null || : > "$out.i"
-    grep -vxF -f "$out.i" "$out.c" | grep -v '^com\.jarnis\.honeypot=' | grep -v '^$' > "$out" || true
+    grep -vxF -f "$out.i" "$out.c" | grep -v -e '^com\.jarnis\.honeypot=' -e '^com\.docker\.compose\.' -e '^$' > "$out" || true
     rm -f "$out.c" "$out.i"
 }
 
@@ -265,12 +296,14 @@ recreate() {
     fi
     if [ -z "$(printf '%s' "$ports" | tr -d '[:space:]')" ]; then
         log "skip $cname — no published ports"
-        return 1
+        return 2
     fi
     envf="$WORKDIR/env"
     rm -f "$envf"
-    if ! container_envfile "$cid" "$cname" "$envf"; then
-        return 1
+    rc=0
+    container_envfile "$cid" "$cname" "$envf" || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        return "$rc"
     fi
     rc=0
     mounts=$(carried_mounts "$cid") || rc=$?
@@ -279,7 +312,7 @@ recreate() {
         return 1
     elif [ "$rc" -ne 0 ]; then
         log "skip $cname — mount path not supported by the updater (whitespace, comma or colon)"
-        return 1
+        return 2
     fi
     rc=0
     opts=$(carried_options "$cid") || rc=$?
@@ -288,7 +321,7 @@ recreate() {
         return 1
     elif [ "$rc" -ne 0 ]; then
         log "skip $cname — network/log/DNS option with whitespace not supported by the updater"
-        return 1
+        return 2
     fi
     labelf="$WORKDIR/labels"
     if ! container_labels "$cid" "$labelf"; then
@@ -325,7 +358,7 @@ recreate() {
     RB_OLD=$cid
     if ! docker rename "$cid" "$old" >/dev/null; then
         log "abort $cname — docker rename failed"
-        rollback
+        restore_previous
         return 1
     fi
     # word-splitting of ports/mounts/opts is intentional (repeated flags)
@@ -342,8 +375,7 @@ recreate() {
         $mounts \
         "$IMAGE") || [ -z "$new_cid" ]; then
         log "recreate failed $cname — docker create failed"
-        rollback
-        log "previous container $cname restored"
+        restore_previous
         return 1
     fi
     RB_NEW=$new_cid
@@ -367,8 +399,7 @@ recreate() {
 
     if ! docker start "$new_cid" >/dev/null; then
         log "recreate failed $cname — new container did not start"
-        rollback
-        log "previous container $cname restored"
+        restore_previous
         return 1
     fi
     # Health gate: the new container must still be running, without a
@@ -378,16 +409,18 @@ recreate() {
     if [ "$st" != "true 0" ]; then
         log "recreate failed $cname — new container not healthy after ${HEALTH_WAIT}s (running/restarts: ${st:-gone})"
         docker logs --tail 10 "$new_cid" 2>&1 | sed 's/^/  | /' || true
-        rollback
-        log "previous container $cname restored"
+        restore_previous
         return 1
     fi
-    if ! docker rm "$cid" >/dev/null; then
-        log "WARNING: new $cname is running, but the previous container $cid could not be removed"
-    fi
+    # Healthy: commit. Clear the rollback state BEFORE touching the old
+    # container, so a signal from here on never removes the new one.
     RB_NAME=""
     RB_OLD=""
     RB_NEW=""
+    RB_WAS_RUNNING=0
+    if ! docker rm "$cid" >/dev/null; then
+        log "WARNING: new $cname is running, but the previous container $cid could not be removed"
+    fi
     log "recreated $cname ($new_id)"
     return 0
 }
@@ -404,11 +437,16 @@ case "$IMAGE" in
         ;;
 esac
 
-# One run at a time (timer and manual run). The lock must not live in /tmp:
-# the systemd unit uses PrivateTmp=yes.
+# One run at a time (timer and manual run). Default lock in /run (root-owned
+# 0755, same path under systemd and manually); not /tmp (the unit uses
+# PrivateTmp=yes) and not /run/lock (world-writable: symlink/DoS by local
+# users). Opened with <> (no truncation); symlinks are refused.
 if command -v flock >/dev/null 2>&1; then
-    mkdir -p "$(dirname "$LOCK_FILE")"
-    exec 9>"$LOCK_FILE"
+    if [ -L "$LOCK_FILE" ]; then
+        log "refusing lock file $LOCK_FILE — it is a symlink"
+        exit 1
+    fi
+    exec 9<>"$LOCK_FILE"
     if ! flock -n 9; then
         log "another jarnis-honeypot-update run holds $LOCK_FILE — exit"
         exit 0
@@ -433,8 +471,16 @@ fi
 
 found=0
 updated=0
+failed=0
+skipped=0
 for cid in $ids; do
     cname=$(docker inspect --format '{{.Name}}' "$cid" | sed 's#^/##')
+    case "$cname" in
+        *.jarnis-prev.*)
+            log "WARNING: leftover container $cname from an interrupted update — not touched, remove it by hand once the current sensor is fine"
+            continue
+            ;;
+    esac
     if [ -n "$NAME" ] && [ "$cname" != "$NAME" ]; then
         continue
     fi
@@ -447,14 +493,21 @@ for cid in $ids; do
         log "up to date $cname"
         continue
     fi
-    if recreate "$cid" "$cname" "$NEW"; then
-        updated=$((updated + 1))
-    fi
+    rc=0
+    recreate "$cid" "$cname" "$NEW" || rc=$?
+    case "$rc" in
+        0) updated=$((updated + 1)) ;;
+        2) skipped=$((skipped + 1)) ;;
+        *) failed=$((failed + 1)) ;;
+    esac
 done
 
 if [ "$found" -eq 0 ]; then
     log "no JARNIS honeypot containers — skip"
     exit 0
 fi
-log "done found=$found updated=$updated"
+log "done found=$found updated=$updated skipped=$skipped failed=$failed"
+if [ "$failed" -gt 0 ]; then
+    exit 1
+fi
 exit 0
