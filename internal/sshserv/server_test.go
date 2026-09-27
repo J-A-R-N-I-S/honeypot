@@ -136,3 +136,19 @@ func TestSSHHandshakeWithoutPasswordReportsConnection(t *testing.T) {
 		t.Fatalf("clientVersion %+v", ev.Raw)
 	}
 }
+
+func TestHostKeyPersistsAcrossLoads(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state", "ssh_host_ecdsa")
+	a, err := loadOrCreateHostKey(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := loadOrCreateHostKey(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ssh.FingerprintSHA256(a.PublicKey()) != ssh.FingerprintSHA256(b.PublicKey()) {
+		t.Fatalf("host key changed between loads: %s vs %s",
+			ssh.FingerprintSHA256(a.PublicKey()), ssh.FingerprintSHA256(b.PublicKey()))
+	}
+}

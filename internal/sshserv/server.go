@@ -210,9 +210,17 @@ func loadOrCreateHostKey(path string) (ssh.Signer, error) {
 		return nil, err
 	}
 	pemBytes := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: der})
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err == nil {
-		_ = os.WriteFile(path, pemBytes, 0o600)
+	// Persist when possible; otherwise ephemeral key (read-only root without
+	// a volume on /var/lib/jarnis-honeypot). An ephemeral key changes on every
+	// container recreate, which lets scanners fingerprint the sensor.
+	err = os.MkdirAll(filepath.Dir(path), 0o700)
+	if err == nil {
+		err = os.WriteFile(path, pemBytes, 0o600)
 	}
-	// Persist when possible; otherwise ephemeral key (read-only / scratch).
+	if err != nil {
+		log.Printf("ssh host key not persisted (%v) — mount a volume on %s to keep the fingerprint across recreates", err, filepath.Dir(path))
+	} else {
+		log.Printf("ssh host key created at %s", path)
+	}
 	return ssh.ParsePrivateKey(pemBytes)
 }
