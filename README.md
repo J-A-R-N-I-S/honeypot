@@ -149,11 +149,13 @@ Do **not** mount `docker.sock` into the honeypot. Do **not** run Watchtower in o
 
 `jarnis-honeypot-update` pulls Hub `latest`, then recreates only JARNIS honeypot containers whose digest changed (label `com.jarnis.honeypot=1` or image `jarnis/honeypot`). Several containers on one host (for example 9022/9023/9080 and 9122/9123/9180) are updated independently. Unrelated containers are never touched. Hub only — never GHCR.
 
-- **Carried over** from the old container: env (token), published ports (tcp/udp, host IP incl. IPv6), volumes and bind mounts (ro/rw), network mode, labels, log driver/options, explicitly set hostname/domainname, `--dns`/`--dns-search`/`--dns-option`, `--add-host`.
+- **Carried over** from the old container: env (token), published ports (tcp/udp, host IP incl. IPv6), volumes and bind mounts (ro/rw), network mode, labels (except `com.docker.compose.*`), log driver/options, explicitly set hostname/domainname (not with `--network host`/`container:`), `--dns`/`--dns-search`/`--dns-option`, `--add-host`.
 - **Always reset to the hardened defaults**: `--restart unless-stopped`, `--memory 64m`, `--cpus 0.25`, `--pids-limit 64`, `--read-only`, `--cap-drop ALL`, `no-new-privileges`, `--tmpfs /tmp:size=8m,mode=1777`.
 - **Not carried over**: additional networks, network aliases/static IPs, user, entrypoint/command, workdir, sysctls, ulimits, devices, other tmpfs mounts. Containers whose mount paths or options contain whitespace (or `,`/`:` in paths) are skipped and left running unchanged.
 - A container without a mount on `/var/lib/jarnis-honeypot` gets a state volume (see [Multiple instances](#multiple-instances-on-one-host) for the name); a key found in an old writable container layer is copied over.
-- **Safe replace**: one run at a time (`flock` on `/run/lock/jarnis-honeypot-update.lock`). The old container is removed only after the new one has run for `HEALTH_WAIT` seconds (default 8) with no restart. On any failure, or SIGINT/SIGTERM, the original container (tracked by ID) is renamed back and restarted.
+- **Safe replace**: one run at a time (`flock` on `/run/jarnis-honeypot-update.lock`; symlinks refused). The old container is removed only after the new one has run for `HEALTH_WAIT` seconds (default 8, minimum 3) with no restart. On any failure, or SIGHUP/SIGINT/SIGTERM, the original container (tracked by ID) is renamed back and restarted; the log says whether that restore actually succeeded. A leftover `<name>.jarnis-prev.<pid>` container (e.g. after a hard kill) is reported and never touched.
+- **Exit status**: `1` if any recreate failed (systemd shows the unit as failed), `0` otherwise. Containers skipped by policy (no published ports, no token, unsupported mount path/option) are logged and do not fail the run.
+- **Compose**: `com.docker.compose.*` labels are not carried over, so after an update a compose-managed sensor is a plain container. For compose installs prefer `docker compose pull && docker compose up -d`; if the host updater already replaced the container, `docker rm -f` it before the next `docker compose up -d` (the state volume is kept).
 
 Daily including weekends (sensors do not sleep). systemd timer at 04:20 host time; cron fallback if there is no systemd.
 
@@ -167,7 +169,7 @@ for f in jarnis-honeypot-update.sh jarnis-honeypot-update.service jarnis-honeypo
   curl -fsSL "https://jarnis.io/guides/$f" -o "$f"
 done
 cat > SHA256SUMS <<'EOF'
-bba3c497b8ce8fc4bea3aa5542afb89f1d4ac84b4ccaa05fa99d637254e262e2  jarnis-honeypot-update.sh
+264a6bd233b783e557475df1f9cfb9fa800a561d9d7f5f6584e55b896b1a20c9  jarnis-honeypot-update.sh
 d3d16961a46f16b432bd5f58e29a3f1bc50225e0a2ebb166a7c0bde73da56baa  jarnis-honeypot-update.service
 04453fcb41355927022705b881f0ad145750f10cd3d8b4fb28103d8166e4e03c  jarnis-honeypot-update.timer
 EOF
@@ -184,6 +186,8 @@ cd / && rm -rf "$d"
 
 The sums are for the files in this repository (`scripts/jarnis-honeypot-update.sh`, `deploy/systemd/*`); jarnis.io serves byte-identical copies. Update the sums whenever one of these files changes.
 
+**What the checksum protects against:** the sums printed in the jarnis.io guides come from the same server as the files, so on their own they only catch transfer errors and truncated downloads — not a compromised website. Compare the sums with **this README on GitHub** (https://github.com/J-A-R-N-I-S/honeypot#vps-systemd-preferred) before you install. Future work: publish a signed `SHA256SUMS` with each release tag.
+
 Cron fallback (no systemd):
 
 ```bash
@@ -192,7 +196,7 @@ echo '20 4 * * * root /usr/local/sbin/jarnis-honeypot-update' > /etc/cron.d/jarn
 
 Disable: `systemctl disable --now jarnis-honeypot-update.timer` (and `rm -f /etc/cron.d/jarnis-honeypot-update` if you used cron).
 
-Optional `/etc/jarnis-honeypot-update.conf`: `NAME` (pin one container; default is every matching honeypot on the host), `IMAGE` (default `jarnis/honeypot:latest`), `ENV_FILE` (used only when `NAME` is set; default `/root/jarnis-honeypot.env`), `HEALTH_WAIT` (seconds the new container must stay up before the old one is removed; default `8`), `LOCK_FILE` (default `/run/lock/jarnis-honeypot-update.lock`). Without `NAME`, each container keeps its own env from inspect. The script never prints the env file or token.
+Optional `/etc/jarnis-honeypot-update.conf`: `NAME` (pin one container; default is every matching honeypot on the host), `IMAGE` (default `jarnis/honeypot:latest`), `ENV_FILE` (used only when `NAME` is set; default `/root/jarnis-honeypot.env`), `HEALTH_WAIT` (seconds the new container must stay up before the old one is removed; default `8`, minimum `3`), `LOCK_FILE` (default `/run/jarnis-honeypot-update.lock`). Without `NAME`, each container keeps its own env from inspect. The script never prints the env file or token.
 
 ### CI secrets (Hub publish)
 
