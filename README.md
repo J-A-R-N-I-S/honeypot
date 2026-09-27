@@ -104,7 +104,24 @@ Port changes need a recreate. Banner and design changes apply on the next poll (
 
 ## Container hardening
 
-The recommended flags: `--read-only`, `--cap-drop ALL`, `--security-opt no-new-privileges:true`, `--pids-limit 64`, `--cpus 0.25`, `--memory 64m`, `--tmpfs /tmp:size=8m,mode=1777`, plus the state volume on `/var/lib/jarnis-honeypot`. No capability is needed to bind 22/23 inside the container. `docker-compose.yml` uses the same settings; the host updater keeps them (and the container's mounts) on every recreate.
+The recommended flags: `--read-only`, `--cap-drop ALL`, `--security-opt no-new-privileges:true`, `--pids-limit 64`, `--cpus 0.25`, `--memory 64m`, `--tmpfs /tmp:size=8m,mode=1777`, plus the state volume on `/var/lib/jarnis-honeypot`. The sensor binds 22/23 inside the container without `CAP_NET_BIND_SERVICE` only because Docker sets `net.ipv4.ip_unprivileged_port_start=0` in the container's network namespace (default for bridge networks since Docker 20.10). With `--network host`, or a runtime that does not set this sysctl, binding 22/23 fails under `--cap-drop ALL`. `docker-compose.yml` uses the same settings; the host updater enforces them on every recreate.
+
+## Multiple instances on one host
+
+Give every instance its own container name, host ports **and state volume** — two sensors sharing one volume would share one SSH host key (and race on first start):
+
+```bash
+docker run -d --name jarnis-honeypot-b --restart unless-stopped \
+  --memory 64m --cpus 0.25 --pids-limit 64 \
+  --read-only --cap-drop ALL --security-opt no-new-privileges:true \
+  --tmpfs /tmp:size=8m,mode=1777 \
+  -v jarnis-honeypot-state-b:/var/lib/jarnis-honeypot \
+  -e HONEYPOT_TOKEN=hpt_…second_token… \
+  -p 9122:22 -p 9123:23 -p 9180:8080 \
+  jarnis/honeypot:latest
+```
+
+The host updater follows the same rule when it has to add a volume: `jarnis-honeypot-state` for the container named `jarnis-honeypot`, `jarnis-honeypot-state-<container name>` for any other.
 
 ## Security
 
@@ -130,23 +147,42 @@ The sensor cannot pull Hub itself: it is `--read-only`, has no `docker.sock`, an
 
 Do **not** mount `docker.sock` into the honeypot. Do **not** run Watchtower in or next to this image.
 
-`jarnis-honeypot-update` pulls Hub `latest`, then recreates only JARNIS honeypot containers whose digest changed (label `com.jarnis.honeypot=1` or image `jarnis/honeypot`). Several containers on one host (for example 9022/9023/9080 and 9122/9123/9180) are updated independently. Token/env, published ports, volume and bind mounts, 64m, 0.25 CPU, and the security flags are kept. A container without a mount on `/var/lib/jarnis-honeypot` gets the named volume `jarnis-honeypot-state` (`jarnis-honeypot-state-<name>` for other container names) so its SSH host key persists from then on; a key found in an old writable container layer is copied over. Unrelated containers are never touched. Hub only — never GHCR.
+`jarnis-honeypot-update` pulls Hub `latest`, then recreates only JARNIS honeypot containers whose digest changed (label `com.jarnis.honeypot=1` or image `jarnis/honeypot`). Several containers on one host (for example 9022/9023/9080 and 9122/9123/9180) are updated independently. Unrelated containers are never touched. Hub only — never GHCR.
+
+- **Carried over** from the old container: env (token), published ports (tcp/udp, host IP incl. IPv6), volumes and bind mounts (ro/rw), network mode, labels, log driver/options, explicitly set hostname/domainname, `--dns`/`--dns-search`/`--dns-option`, `--add-host`.
+- **Always reset to the hardened defaults**: `--restart unless-stopped`, `--memory 64m`, `--cpus 0.25`, `--pids-limit 64`, `--read-only`, `--cap-drop ALL`, `no-new-privileges`, `--tmpfs /tmp:size=8m,mode=1777`.
+- **Not carried over**: additional networks, network aliases/static IPs, user, entrypoint/command, workdir, sysctls, ulimits, devices, other tmpfs mounts. Containers whose mount paths or options contain whitespace (or `,`/`:` in paths) are skipped and left running unchanged.
+- A container without a mount on `/var/lib/jarnis-honeypot` gets a state volume (see [Multiple instances](#multiple-instances-on-one-host) for the name); a key found in an old writable container layer is copied over.
+- **Safe replace**: one run at a time (`flock` on `/run/lock/jarnis-honeypot-update.lock`). The old container is removed only after the new one has run for `HEALTH_WAIT` seconds (default 8) with no restart. On any failure, or SIGINT/SIGTERM, the original container (tracked by ID) is renamed back and restarted.
 
 Daily including weekends (sensors do not sleep). systemd timer at 04:20 host time; cron fallback if there is no systemd.
 
 ### VPS (systemd, preferred)
 
-```bash
-# update script (Hub default IMAGE=jarnis/honeypot:latest)
-curl -fsSL https://jarnis.io/guides/jarnis-honeypot-update.sh -o /usr/local/sbin/jarnis-honeypot-update
-chmod 755 /usr/local/sbin/jarnis-honeypot-update
+Download to a scratch dir, **verify the SHA-256 sums**, then install. The script runs daily as root — do not skip the check.
 
-# systemd units (public copies on jarnis.io/guides)
-curl -fsSL https://jarnis.io/guides/jarnis-honeypot-update.service -o /etc/systemd/system/jarnis-honeypot-update.service
-curl -fsSL https://jarnis.io/guides/jarnis-honeypot-update.timer -o /etc/systemd/system/jarnis-honeypot-update.timer
-systemctl daemon-reload
-systemctl enable --now jarnis-honeypot-update.timer
+```bash
+d=$(mktemp -d) && cd "$d"
+for f in jarnis-honeypot-update.sh jarnis-honeypot-update.service jarnis-honeypot-update.timer; do
+  curl -fsSL "https://jarnis.io/guides/$f" -o "$f"
+done
+cat > SHA256SUMS <<'EOF'
+bba3c497b8ce8fc4bea3aa5542afb89f1d4ac84b4ccaa05fa99d637254e262e2  jarnis-honeypot-update.sh
+d3d16961a46f16b432bd5f58e29a3f1bc50225e0a2ebb166a7c0bde73da56baa  jarnis-honeypot-update.service
+04453fcb41355927022705b881f0ad145750f10cd3d8b4fb28103d8166e4e03c  jarnis-honeypot-update.timer
+EOF
+if sha256sum -c SHA256SUMS; then
+  install -m 755 jarnis-honeypot-update.sh /usr/local/sbin/jarnis-honeypot-update
+  install -m 644 jarnis-honeypot-update.service jarnis-honeypot-update.timer /etc/systemd/system/
+  systemctl daemon-reload
+  systemctl enable --now jarnis-honeypot-update.timer
+else
+  echo 'CHECKSUM MISMATCH — nothing installed'
+fi
+cd / && rm -rf "$d"
 ```
+
+The sums are for the files in this repository (`scripts/jarnis-honeypot-update.sh`, `deploy/systemd/*`); jarnis.io serves byte-identical copies. Update the sums whenever one of these files changes.
 
 Cron fallback (no systemd):
 
@@ -156,7 +192,7 @@ echo '20 4 * * * root /usr/local/sbin/jarnis-honeypot-update' > /etc/cron.d/jarn
 
 Disable: `systemctl disable --now jarnis-honeypot-update.timer` (and `rm -f /etc/cron.d/jarnis-honeypot-update` if you used cron).
 
-Optional `/etc/jarnis-honeypot-update.conf`: `NAME` (pin one container; default is every matching honeypot on the host), `IMAGE` (default `jarnis/honeypot:latest`), `ENV_FILE` (used only when `NAME` is set; default `/root/jarnis-honeypot.env`). Without `NAME`, each container keeps its own env from inspect. The script never prints the env file or token.
+Optional `/etc/jarnis-honeypot-update.conf`: `NAME` (pin one container; default is every matching honeypot on the host), `IMAGE` (default `jarnis/honeypot:latest`), `ENV_FILE` (used only when `NAME` is set; default `/root/jarnis-honeypot.env`), `HEALTH_WAIT` (seconds the new container must stay up before the old one is removed; default `8`), `LOCK_FILE` (default `/run/lock/jarnis-honeypot-update.lock`). Without `NAME`, each container keeps its own env from inspect. The script never prints the env file or token.
 
 ### CI secrets (Hub publish)
 

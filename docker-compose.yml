@@ -36,5 +36,14 @@ services:
 volumes:
   jarnis-honeypot-state:
     # Fixed name (no compose project prefix) so `docker run` and compose
-    # installs share the same state volume.
+    # installs share the same state volume. One instance per host; for more
+    # instances give each its own volume name (see README).
+    #
+    # Migration: older versions of this file used `hp-state`, which compose
+    # created as `<project>_hp-state`. That volume is no longer used, so an
+    # existing compose install shows a NEW SSH host-key fingerprint once after
+    # this change; from then on it stays stable. (The old host updater dropped
+    # `hp-state` on recreate anyway.) To keep the old key instead, copy
+    # ssh_host_ecdsa from `<project>_hp-state` into `jarnis-honeypot-state`
+    # before `docker compose up -d`.
     name: jarnis-honeypot-state
