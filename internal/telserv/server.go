@@ -139,13 +139,13 @@ func (s *Server) handle(c net.Conn) {
 	_, _ = io.WriteString(c, "login: ")
 	// One reader per connection: bots pipeline "user\r\npass\r\n", and a
 	// fresh bufio.Reader per line would drop the buffered password.
-	r := bufio.NewReader(c)
-	user, err := readLine(r)
+	lr := &lineReader{r: bufio.NewReader(c)}
+	user, err := lr.readLine()
 	if err != nil {
 		return
 	}
 	_, _ = io.WriteString(c, "Password: ")
-	pass, err := readLine(r)
+	pass, err := lr.readLine()
 	if err != nil {
 		return
 	}
@@ -166,20 +166,38 @@ func (s *Server) handle(c net.Conn) {
 	_, _ = io.WriteString(c, "\r\nLogin incorrect\r\n")
 }
 
-func readLine(r *bufio.Reader) (string, error) {
+// lineReader reads telnet lines. It understands the parts of RFC 854 that
+// clients actually send before the login: option negotiation (IAC
+// WILL/WONT/DO/DONT x), subnegotiation (IAC SB ... IAC SE, e.g. terminal
+// type), escaped IAC IAC, and all three line endings: CR LF, CR NUL, LF.
+type lineReader struct {
+	r       *bufio.Reader
+	afterCR bool // swallow the LF/NUL that follows a CR ending a line
+}
+
+const (
+	se = 240
+	sb = 250
+
+	maxSubnegotiation = 1024
+)
+
+func (lr *lineReader) readLine() (string, error) {
 	var b strings.Builder
 	for {
-		by, err := r.ReadByte()
+		by, err := lr.r.ReadByte()
 		if err != nil {
 			return strings.TrimSpace(b.String()), err
 		}
-		if by == iac {
-			cmd, err := r.ReadByte()
-			if err != nil {
-				return "", err
+		if lr.afterCR {
+			lr.afterCR = false
+			if by == '\n' || by == 0 {
+				continue
 			}
-			if cmd == will || cmd == wont || cmd == do || cmd == dont {
-				_, _ = r.ReadByte()
+		}
+		if by == iac {
+			if err := lr.skipCommand(); err != nil {
+				return "", err
 			}
 			continue
 		}
@@ -187,7 +205,8 @@ func readLine(r *bufio.Reader) (string, error) {
 			break
 		}
 		if by == '\r' {
-			continue
+			lr.afterCR = true
+			break
 		}
 		if by == 0x7f || by == 0x08 {
 			s := b.String()
@@ -202,4 +221,40 @@ func readLine(r *bufio.Reader) (string, error) {
 		}
 	}
 	return strings.TrimSpace(b.String()), nil
+}
+
+// skipCommand consumes the rest of a command after IAC.
+func (lr *lineReader) skipCommand() error {
+	cmd, err := lr.r.ReadByte()
+	if err != nil {
+		return err
+	}
+	switch cmd {
+	case will, wont, do, dont:
+		_, err = lr.r.ReadByte()
+		return err
+	case sb:
+		// Skip to IAC SE; IAC IAC inside is an escaped data byte. Bounded so
+		// a client cannot keep us in here forever.
+		for n := 0; n < maxSubnegotiation; n++ {
+			c, err := lr.r.ReadByte()
+			if err != nil {
+				return err
+			}
+			if c != iac {
+				continue
+			}
+			c, err = lr.r.ReadByte()
+			if err != nil {
+				return err
+			}
+			if c == se {
+				return nil
+			}
+		}
+		return nil
+	default:
+		// IAC IAC (escaped 0xFF, not printable), NOP, GA, AYT, ...: ignore.
+		return nil
+	}
 }
