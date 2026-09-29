@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
@@ -115,7 +116,7 @@ type Config struct {
 	HoneypotID            string `json:"honeypotId"`
 	Name                  string `json:"name"`
 	Status                string `json:"status"`
-	UpdateIntervalSeconds int    `json:"updateIntervalSeconds"`
+	UpdateIntervalSeconds IntervalSeconds `json:"updateIntervalSeconds"`
 	Services              struct {
 		SSH    ServiceSSH    `json:"ssh"`
 		Telnet ServiceTelnet `json:"telnet"`
@@ -267,14 +268,72 @@ func (c *Client) FetchConfig() (*Config, error) {
 	if res.StatusCode != 200 {
 		return nil, fmt.Errorf("config %d: %s", res.StatusCode, clip(body, 200))
 	}
+	return parseConfig(body)
+}
+
+// parseConfig decodes and validates a config response. Only a response with
+// ok:true and a honeypotId is usable; anything else ({} or ok:false with
+// status 200) is an error, so it neither replaces the live config (and
+// clears the banners) nor overwrites a good cache.
+func parseConfig(body []byte) (*Config, error) {
 	var cfg Config
 	if err := json.Unmarshal(body, &cfg); err != nil {
 		return nil, err
 	}
-	if cfg.UpdateIntervalSeconds < 30 {
-		cfg.UpdateIntervalSeconds = 30
+	if !cfg.OK {
+		return nil, fmt.Errorf("config rejected: ok=false: %s", clip(body, 200))
 	}
+	if strings.TrimSpace(cfg.HoneypotID) == "" {
+		return nil, fmt.Errorf("config rejected: no honeypotId")
+	}
+	cfg.UpdateIntervalSeconds = cfg.UpdateIntervalSeconds.Clamp()
 	return &cfg, nil
+}
+
+const (
+	MinUpdateIntervalSeconds = 30
+	MaxUpdateIntervalSeconds = 86400
+)
+
+// IntervalSeconds is the poll interval. It accepts any JSON number (also
+// 9.3e9 or 120.5) without failing the whole config and saturates instead of
+// overflowing; Clamp limits it to 30..86400.
+type IntervalSeconds int
+
+func (s *IntervalSeconds) UnmarshalJSON(b []byte) error {
+	v := strings.TrimSpace(string(b))
+	if v == "null" {
+		*s = 0
+		return nil
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if ne, ok := err.(*strconv.NumError); ok && ne.Err == strconv.ErrRange {
+		err = nil // ±Inf: saturate below
+	}
+	if err != nil || math.IsNaN(f) {
+		return fmt.Errorf("updateIntervalSeconds: not a number: %s", clip(b, 40))
+	}
+	switch {
+	case f > math.MaxInt32:
+		*s = math.MaxInt32
+	case f < math.MinInt32:
+		*s = math.MinInt32
+	default:
+		*s = IntervalSeconds(f)
+	}
+	return nil
+}
+
+// Clamp returns the interval limited to MinUpdateIntervalSeconds ..
+// MaxUpdateIntervalSeconds (0 and negative values give the minimum).
+func (s IntervalSeconds) Clamp() IntervalSeconds {
+	if s < MinUpdateIntervalSeconds {
+		return MinUpdateIntervalSeconds
+	}
+	if s > MaxUpdateIntervalSeconds {
+		return MaxUpdateIntervalSeconds
+	}
+	return s
 }
 
 func (c *Client) PostCredential(ev CredEvent) error {

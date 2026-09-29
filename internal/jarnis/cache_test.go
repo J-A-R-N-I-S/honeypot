@@ -73,7 +73,7 @@ func TestConfigCacheUnchangedIsNotRewritten(t *testing.T) {
 
 func TestConfigCacheLoadTightensLoosePerms(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
-	if err := os.WriteFile(path, []byte(`{"name":"x"}`), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(`{"ok":true,"name":"x"}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Chmod(path, 0o644); err != nil {

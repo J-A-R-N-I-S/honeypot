@@ -102,9 +102,7 @@ func main() {
 			log.Printf("ignoring invalid config services.ssh.serverVersion %q", v)
 		}
 		live = *cfg
-		if cfg.UpdateIntervalSeconds >= 30 {
-			interval = cfg.UpdateIntervalSeconds
-		}
+		interval = int(cfg.UpdateIntervalSeconds.Clamp())
 		// Identity is NOT taken from here: see Poller.SetIdentity.
 	}
 	bannerSSH := func() string {

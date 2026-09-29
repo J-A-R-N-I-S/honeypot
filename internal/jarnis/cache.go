@@ -25,8 +25,8 @@ const maxConfigCacheBytes = 2 << 20 // same limit as the config fetch
 // It returns changed=false (and does not touch the file) when the content
 // is identical.
 func SaveConfigCache(path string, cfg *Config) (changed bool, err error) {
-	if cfg == nil {
-		return false, fmt.Errorf("nil config")
+	if cfg == nil || !cfg.OK {
+		return false, fmt.Errorf("refusing to cache a config without ok=true")
 	}
 	c := *cfg
 	c.HoneypotID = ""
@@ -79,9 +79,10 @@ func LoadConfigCache(path string) (*Config, error) {
 	}
 	// Never trust an identity from disk (older files may still carry one).
 	cfg.HoneypotID = ""
-	if cfg.UpdateIntervalSeconds < 30 {
-		cfg.UpdateIntervalSeconds = 30
+	if !cfg.OK {
+		return nil, fmt.Errorf("config cache %s: ok is not true", path)
 	}
+	cfg.UpdateIntervalSeconds = cfg.UpdateIntervalSeconds.Clamp()
 	return &cfg, nil
 }
 
