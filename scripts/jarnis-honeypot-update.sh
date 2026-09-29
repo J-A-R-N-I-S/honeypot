@@ -28,9 +28,12 @@
 # Safety: one run at a time (flock on $LOCK_FILE). The old container is only
 # removed after the new one has been running for $HEALTH_WAIT seconds (min 3)
 # without a restart; otherwise, on any error, or on SIGHUP/SIGINT/SIGTERM, the
-# old container (tracked by ID, never by name) is renamed back and restarted.
-# Exit status: 0 = every matching container is up to date, recreated or
-# skipped by policy; 1 = at least one recreate failed (see the log).
+# old container (tracked by ID, never by name) is restarted by ID (if it was
+# running) and renamed back where possible; the log and exit code say whether
+# the restore fully succeeded.
+# Exit status: 0 = every matching container is up to date and running,
+# recreated or skipped by policy; 1 = at least one recreate failed, or a
+# container with the current image is not running (see the log).
 # com.docker.compose.* labels are not carried over: after an update a
 # compose-managed sensor is a plain container (see README).
 #
@@ -50,6 +53,10 @@
 #   ENV_FILE=/root/jarnis-honeypot.env  # used only when NAME is set
 #   HEALTH_WAIT=8                 # seconds the new container must stay up (min 3)
 #   LOCK_FILE=/run/jarnis-honeypot-update.lock
+#
+# Running manually as a non-root member of the docker group: /run is not
+# writable, so set a lock file you own, e.g.
+#   LOCK_FILE=$XDG_RUNTIME_DIR/jarnis-honeypot-update.lock jarnis-honeypot-update
 set -eu
 # No globbing: port, mount and option lists are word-split on purpose below.
 set -f
@@ -86,25 +93,33 @@ RB_WAS_RUNNING=0
 WORKDIR=""
 
 # Returns 0 only if the original container is back under its name (and
-# running, if it was running before).
+# running, if it was running before). If it was running, it is restarted by
+# ID even when the rename back fails, so the sensor keeps capturing (under
+# the wrong name) instead of staying silently stopped.
 rollback() {
     rb_ok=0
     if [ -n "$RB_NEW" ]; then
         docker rm -f "$RB_NEW" >/dev/null 2>&1 || log "WARNING: could not remove new container $RB_NEW"
     fi
     if [ -n "$RB_OLD" ]; then
+        rb_exists=1
         cur=$(docker inspect --format '{{.Name}}' "$RB_OLD" 2>/dev/null | sed 's#^/##' || true)
         if [ -z "$cur" ]; then
             log "ERROR: previous container $RB_OLD no longer exists"
             rb_ok=1
+            rb_exists=0
         elif [ "$cur" != "$RB_NAME" ]; then
             if ! docker rename "$RB_OLD" "$RB_NAME" >/dev/null 2>&1; then
-                log "ERROR: could not rename $RB_OLD back to $RB_NAME"
+                log "ERROR: could not rename $RB_OLD back to $RB_NAME (it keeps the name $cur)"
                 rb_ok=1
             fi
         fi
-        if [ "$rb_ok" -eq 0 ] && [ "$RB_WAS_RUNNING" = 1 ]; then
-            if ! docker start "$RB_OLD" >/dev/null 2>&1; then
+        if [ "$rb_exists" -eq 1 ] && [ "$RB_WAS_RUNNING" = 1 ]; then
+            if docker start "$RB_OLD" >/dev/null 2>&1; then
+                if [ "$rb_ok" -ne 0 ]; then
+                    log "previous container $RB_OLD restarted by ID under the name $cur"
+                fi
+            else
                 log "ERROR: could not start previous container $RB_NAME ($RB_OLD)"
                 rb_ok=1
             fi
@@ -473,11 +488,12 @@ found=0
 updated=0
 failed=0
 skipped=0
+stopped=0
 for cid in $ids; do
     cname=$(docker inspect --format '{{.Name}}' "$cid" | sed 's#^/##')
     case "$cname" in
         *.jarnis-prev.*)
-            log "WARNING: leftover container $cname from an interrupted update — not touched, remove it by hand once the current sensor is fine"
+            log "WARNING: leftover container $cname from an interrupted update — not touched. If it is running, it is the previous sensor restarted after a failed rename back: sort out the names by hand (docker ps -a)"
             continue
             ;;
     esac
@@ -490,6 +506,14 @@ for cid in $ids; do
     found=$((found + 1))
     old=$(docker inspect --format '{{.Image}}' "$cid")
     if [ "$old" = "$NEW" ]; then
+        # A stopped sensor under the name (e.g. left by a failed restore)
+        # must not pass as "up to date": warn and fail the run.
+        state=$(docker inspect --format '{{.State.Running}}' "$cid" 2>/dev/null || true)
+        if [ "$state" != "true" ]; then
+            log "ERROR: $cname has the current image but is NOT running — check 'docker ps -a' and start it (docker start $cname)"
+            stopped=$((stopped + 1))
+            continue
+        fi
         log "up to date $cname"
         continue
     fi
@@ -506,8 +530,8 @@ if [ "$found" -eq 0 ]; then
     log "no JARNIS honeypot containers — skip"
     exit 0
 fi
-log "done found=$found updated=$updated skipped=$skipped failed=$failed"
-if [ "$failed" -gt 0 ]; then
+log "done found=$found updated=$updated skipped=$skipped failed=$failed stopped=$stopped"
+if [ "$failed" -gt 0 ] || [ "$stopped" -gt 0 ]; then
     exit 1
 fi
 exit 0

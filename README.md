@@ -178,8 +178,8 @@ Do **not** mount `docker.sock` into the honeypot. Do **not** run Watchtower in o
 - **Always reset to the hardened defaults**: `--restart unless-stopped`, `--memory 64m`, `--cpus 0.25`, `--pids-limit 64`, `--read-only`, `--cap-drop ALL`, `no-new-privileges`, `--tmpfs /tmp:size=8m,mode=1777`.
 - **Not carried over**: additional networks, network aliases/static IPs, user, entrypoint/command, workdir, sysctls, ulimits, devices, other tmpfs mounts. Containers whose mount paths or options contain whitespace (or `,`/`:` in paths) are skipped and left running unchanged.
 - A container without a mount on `/var/lib/jarnis-honeypot` gets a state volume (see [Multiple instances](#multiple-instances-on-one-host) for the name); a key found in an old writable container layer is copied over.
-- **Safe replace**: one run at a time (`flock` on `/run/jarnis-honeypot-update.lock`; symlinks refused). The old container is removed only after the new one has run for `HEALTH_WAIT` seconds (default 8, minimum 3) with no restart. On any failure, or SIGHUP/SIGINT/SIGTERM, the original container (tracked by ID) is renamed back and restarted; the log says whether that restore actually succeeded. A leftover `<name>.jarnis-prev.<pid>` container (e.g. after a hard kill) is reported and never touched.
-- **Exit status**: `1` if any recreate failed (systemd shows the unit as failed), `0` otherwise. Containers skipped by policy (no published ports, no token, unsupported mount path/option) are logged and do not fail the run.
+- **Safe replace**: one run at a time (`flock` on `/run/jarnis-honeypot-update.lock`; symlinks refused). The old container is removed only after the new one has run for `HEALTH_WAIT` seconds (default 8, minimum 3) with no restart. On any failure, or SIGHUP/SIGINT/SIGTERM, the original container (tracked by ID) is restarted by ID and renamed back where possible; the log and exit code say whether the restore fully succeeded. A leftover `<name>.jarnis-prev.<pid>` container (e.g. after a hard kill) is reported and never touched.
+- **Exit status**: `1` if any recreate failed or a honeypot container with the current image is not running (systemd shows the unit as failed), `0` otherwise. Containers skipped by policy (no published ports, no token, unsupported mount path/option) are logged and do not fail the run.
 - **Compose**: `com.docker.compose.*` labels are not carried over, so after an update a compose-managed sensor is a plain container. For compose installs prefer `docker compose pull && docker compose up -d`; if the host updater already replaced the container, `docker rm -f` it before the next `docker compose up -d` (the state volume is kept).
 
 Daily including weekends (sensors do not sleep). systemd timer at 04:20 host time; cron fallback if there is no systemd.
@@ -194,7 +194,7 @@ for f in jarnis-honeypot-update.sh jarnis-honeypot-update.service jarnis-honeypo
   curl -fsSL "https://jarnis.io/guides/$f" -o "$f"
 done
 cat > SHA256SUMS <<'EOF'
-264a6bd233b783e557475df1f9cfb9fa800a561d9d7f5f6584e55b896b1a20c9  jarnis-honeypot-update.sh
+15567424ba5166d2e70ca2b6d36c1aaccda2f4fd95fe3ff10777f1ec059cc8c1  jarnis-honeypot-update.sh
 d3d16961a46f16b432bd5f58e29a3f1bc50225e0a2ebb166a7c0bde73da56baa  jarnis-honeypot-update.service
 04453fcb41355927022705b881f0ad145750f10cd3d8b4fb28103d8166e4e03c  jarnis-honeypot-update.timer
 EOF
@@ -221,7 +221,7 @@ echo '20 4 * * * root /usr/local/sbin/jarnis-honeypot-update' > /etc/cron.d/jarn
 
 Disable: `systemctl disable --now jarnis-honeypot-update.timer` (and `rm -f /etc/cron.d/jarnis-honeypot-update` if you used cron).
 
-Optional `/etc/jarnis-honeypot-update.conf`: `NAME` (pin one container; default is every matching honeypot on the host), `IMAGE` (default `jarnis/honeypot:latest`), `ENV_FILE` (used only when `NAME` is set; default `/root/jarnis-honeypot.env`), `HEALTH_WAIT` (seconds the new container must stay up before the old one is removed; default `8`, minimum `3`), `LOCK_FILE` (default `/run/jarnis-honeypot-update.lock`). Without `NAME`, each container keeps its own env from inspect. The script never prints the env file or token.
+Optional `/etc/jarnis-honeypot-update.conf`: `NAME` (pin one container; default is every matching honeypot on the host), `IMAGE` (default `jarnis/honeypot:latest`), `ENV_FILE` (used only when `NAME` is set; default `/root/jarnis-honeypot.env`), `HEALTH_WAIT` (seconds the new container must stay up before the old one is removed; default `8`, minimum `3`), `LOCK_FILE` (default `/run/jarnis-honeypot-update.lock`; a non-root member of the `docker` group running the script by hand cannot create that file and needs e.g. `LOCK_FILE=$XDG_RUNTIME_DIR/jarnis-honeypot-update.lock`). Without `NAME`, each container keeps its own env from inspect. The script never prints the env file or token.
 
 ### CI secrets (Hub publish)
 
