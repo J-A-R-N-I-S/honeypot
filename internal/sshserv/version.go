@@ -2,32 +2,32 @@ package sshserv
 
 import (
 	"bytes"
+	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/binary"
 	"net"
 	"strings"
 	"sync"
-
-	"golang.org/x/crypto/ssh"
 )
 
 // DefaultVersion is the SSH identification string used when no override is
-// set and no host key is available to pick a per-install default.
-const DefaultVersion = "SSH-2.0-OpenSSH_9.6p1 Ubuntu-3ubuntu13.5"
+// set and no host key secret is available to pick a per-install default.
+const DefaultVersion = "SSH-2.0-OpenSSH_9.6p1 Ubuntu-3ubuntu13.19"
 
-// DefaultVersions are realistic stock OpenSSH identification strings of
-// current Ubuntu / Debian LTS releases. Each install picks one
-// deterministically from its host key (see VersionForHostKey), so JARNIS
-// sensors do not all share one fingerprint.
+// DefaultVersions are stock OpenSSH identification strings of currently
+// supported Ubuntu / Debian releases (package versions as published in
+// Sept 2026; the ident is "OpenSSH_<upstream> <Distro>-<revision>"). Each
+// install picks one with VersionForSecret, so JARNIS sensors do not all share
+// one banner. Refresh when the distributions ship new revisions.
 var DefaultVersions = []string{
-	DefaultVersion, // Ubuntu 24.04
-	"SSH-2.0-OpenSSH_9.6p1 Ubuntu-3ubuntu13.8", // Ubuntu 24.04
-	"SSH-2.0-OpenSSH_8.9p1 Ubuntu-3ubuntu0.10", // Ubuntu 22.04
-	"SSH-2.0-OpenSSH_8.9p1 Ubuntu-3ubuntu0.6",  // Ubuntu 22.04
-	"SSH-2.0-OpenSSH_9.2p1 Debian-2+deb12u3",   // Debian 12
-	"SSH-2.0-OpenSSH_9.2p1 Debian-2+deb12u5",   // Debian 12
-	"SSH-2.0-OpenSSH_8.4p1 Debian-5+deb11u3",   // Debian 11
-	"SSH-2.0-OpenSSH_8.2p1 Ubuntu-4ubuntu0.11", // Ubuntu 20.04
+	DefaultVersion, // Ubuntu 24.04 noble-updates/-security 1:9.6p1-3ubuntu13.19
+	"SSH-2.0-OpenSSH_9.6p1 Ubuntu-3ubuntu13.15", // Ubuntu 24.04, earlier update
+	"SSH-2.0-OpenSSH_8.9p1 Ubuntu-3ubuntu0.17",  // Ubuntu 22.04 jammy-updates/-security
+	"SSH-2.0-OpenSSH_10.2p1 Ubuntu-2ubuntu3.6",  // Ubuntu 26.04 resolute-updates/-security
+	"SSH-2.0-OpenSSH_10.2p1 Ubuntu-2ubuntu3",    // Ubuntu 26.04 release
+	"SSH-2.0-OpenSSH_9.2p1 Debian-2+deb12u10",   // Debian 12 bookworm (point release)
+	"SSH-2.0-OpenSSH_10.0p2 Debian-7+deb13u4",   // Debian 13 trixie (point release)
+	"SSH-2.0-OpenSSH_10.0p2 Debian-7",           // Debian 13 trixie release
 }
 
 // maxVersionLen keeps "<version>\r\n" within the 255 bytes of RFC 4253 4.2.
@@ -53,15 +53,19 @@ func ValidVersion(v string) bool {
 	return sw != "" && !strings.Contains(sw, "-")
 }
 
-// VersionForHostKey picks one of DefaultVersions from the SHA-256 of the host
-// public key. The host key is persisted on the state volume, so the choice is
-// stable across restarts and recreates of one install and differs between
-// installs.
-func VersionForHostKey(pub ssh.PublicKey) string {
-	if pub == nil || len(DefaultVersions) == 0 {
+// VersionForSecret picks one of DefaultVersions with HMAC-SHA256 keyed by
+// secret (the PEM of the persisted PRIVATE host key). It must not depend on
+// public data only: the repository is public, so a choice derived from the
+// public host key could be recomputed by a scanner and used to spot JARNIS
+// sensors. The key is persisted on the state volume, so the choice is stable
+// per install and differs between installs.
+func VersionForSecret(secret []byte) string {
+	if len(secret) == 0 || len(DefaultVersions) == 0 {
 		return DefaultVersion
 	}
-	sum := sha256.Sum256(pub.Marshal())
+	mac := hmac.New(sha256.New, secret)
+	mac.Write([]byte("jarnis-honeypot/ssh-ident/v1"))
+	sum := mac.Sum(nil)
 	n := binary.BigEndian.Uint64(sum[:8])
 	return DefaultVersions[n%uint64(len(DefaultVersions))]
 }

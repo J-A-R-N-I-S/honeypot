@@ -117,7 +117,7 @@ Which string is sent, first match wins:
 
 1. `SSH_SERVER_VERSION` (env), e.g. `SSH_SERVER_VERSION="SSH-2.0-OpenSSH_9.6p1 Ubuntu-3ubuntu13.5"`
 2. `services.ssh.serverVersion` from the JARNIS config (optional)
-3. Per-install default: one of a small list of stock Ubuntu/Debian OpenSSH strings (Ubuntu 20.04/22.04/24.04, Debian 11/12; `SSH-2.0-OpenSSH_9.6p1 Ubuntu-3ubuntu13.5` is one of them), picked deterministically from the SHA-256 of the SSH host key. The host key is on the state volume, so the string stays the same across restarts and updates of one install and differs between installs — JARNIS sensors do not all share one banner.
+3. Per-install default: one of a small list of stock OpenSSH strings of supported Ubuntu (22.04, 24.04, 26.04) and Debian (12, 13) releases, e.g. `SSH-2.0-OpenSSH_9.6p1 Ubuntu-3ubuntu13.19`. The choice is an HMAC-SHA256 keyed with the **private** SSH host key, so it cannot be recomputed from anything a scanner sees (the public key and this repository are public). The key is on the state volume, so the string stays the same across restarts and updates of one install and differs between installs — JARNIS sensors do not all share one banner.
 
 The value must be `SSH-2.0-<software>[ <comment>]`, printable ASCII, at most 253 characters, no `-` in `<software>`; anything else is logged and ignored. The chosen string is logged at startup (`ssh listen … ident "…"`). Note: this changes the banner only; the key-exchange algorithm list is still that of Go's SSH library.
 

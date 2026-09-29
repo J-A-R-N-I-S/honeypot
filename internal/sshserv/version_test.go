@@ -3,10 +3,10 @@ package sshserv
 import (
 	"bufio"
 	"bytes"
-	"crypto/ecdsa"
-	"crypto/elliptic"
 	"crypto/rand"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -47,13 +47,17 @@ func TestIdentSentImmediatelyOnConnect(t *testing.T) {
 	}
 }
 
-func TestIdentDefaultIsPerInstallFromHostKey(t *testing.T) {
+func TestIdentDefaultIsPerInstallFromPrivateKey(t *testing.T) {
 	s := startSSHWith(t, &Server{})
-	signer, err := loadOrCreateHostKey(s.KeyPath)
+	_, secret, err := loadOrCreateHostKeySecret(s.KeyPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := VersionForHostKey(signer.PublicKey())
+	pemOnDisk, _ := os.ReadFile(s.KeyPath)
+	if !bytes.Equal(secret, pemOnDisk) {
+		t.Fatal("secret must be the persisted private key")
+	}
+	want := VersionForSecret(secret)
 	if got := readIdentWithoutSending(t, s.Addr); got != want {
 		t.Fatalf("ident %q want per-install default %q", got, want)
 	}
@@ -122,22 +126,18 @@ func TestValidVersion(t *testing.T) {
 	}
 }
 
-func TestVersionForHostKeyDeterministicAndVaried(t *testing.T) {
-	if VersionForHostKey(nil) != DefaultVersion {
-		t.Fatal("nil key must give DefaultVersion")
+func TestVersionForSecretDeterministicAndVaried(t *testing.T) {
+	if VersionForSecret(nil) != DefaultVersion {
+		t.Fatal("no secret must give DefaultVersion")
 	}
 	seen := map[string]bool{}
-	for i := 0; i < 40; i++ {
-		k, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-		if err != nil {
+	for i := 0; i < 64; i++ {
+		secret := make([]byte, 32)
+		if _, err := rand.Read(secret); err != nil {
 			t.Fatal(err)
 		}
-		pub, err := ssh.NewPublicKey(&k.PublicKey)
-		if err != nil {
-			t.Fatal(err)
-		}
-		v := VersionForHostKey(pub)
-		if v != VersionForHostKey(pub) {
+		v := VersionForSecret(secret)
+		if v != VersionForSecret(append([]byte(nil), secret...)) {
 			t.Fatal("not deterministic")
 		}
 		if !contains(DefaultVersions, v) {
@@ -145,8 +145,24 @@ func TestVersionForHostKeyDeterministicAndVaried(t *testing.T) {
 		}
 		seen[v] = true
 	}
-	if len(seen) < 2 {
-		t.Fatalf("40 keys all mapped to %v", seen)
+	if len(seen) < 3 {
+		t.Fatalf("64 secrets mapped to only %v", seen)
+	}
+}
+
+// The choice must depend on the private key: two keys with the same public
+// half do not exist, so check instead that the public key alone is not the
+// HMAC input (a scanner only sees the public key).
+func TestVersionNotDerivedFromPublicKey(t *testing.T) {
+	signer, secret, err := loadOrCreateHostKeySecret(filepath.Join(t.TempDir(), "k"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(secret, signer.PublicKey().Marshal()) {
+		t.Fatal("secret must be the private key PEM, not public key bytes")
+	}
+	if !strings.Contains(string(secret), "PRIVATE KEY") {
+		t.Fatalf("secret is not a private key PEM")
 	}
 }
 
