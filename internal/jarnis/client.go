@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -266,9 +267,25 @@ func (c *Client) FetchConfig() (*Config, error) {
 	defer res.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(res.Body, 2<<20))
 	if res.StatusCode != 200 {
-		return nil, fmt.Errorf("config %d: %s", res.StatusCode, clip(body, 200))
+		return nil, &StatusError{Op: "config", Code: res.StatusCode, Body: clip(body, 200)}
 	}
 	return parseConfig(body)
+}
+
+// StatusError is a non-200 answer from the API.
+type StatusError struct {
+	Op   string
+	Code int
+	Body string
+}
+
+func (e *StatusError) Error() string { return fmt.Sprintf("%s %d: %s", e.Op, e.Code, e.Body) }
+
+// IsAuthError reports whether err is a 401/403 from the API: the token (or
+// its sensor) was rejected, which retrying quickly will not fix.
+func IsAuthError(err error) bool {
+	var se *StatusError
+	return errors.As(err, &se) && (se.Code == http.StatusUnauthorized || se.Code == http.StatusForbidden)
 }
 
 // parseConfig decodes and validates a config response. Only a response with

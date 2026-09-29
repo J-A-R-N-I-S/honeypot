@@ -78,6 +78,7 @@ func TestPollerIgnoresNotOKResponses(t *testing.T) {
 		p := &Poller{Fetch: cli.FetchConfig, Apply: func(*Config) { applied++ }, SetIdentity: cli.SetHoneypotID, CachePath: cache}
 		var slept time.Duration
 		p.sleep = func(_ context.Context, d time.Duration) bool { slept = d; return false }
+		p.jitter = noJitter
 		p.Run(context.Background())
 		ts.Close()
 		after, _ := os.ReadFile(cache)

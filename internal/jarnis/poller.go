@@ -4,12 +4,21 @@ import (
 	"context"
 	"errors"
 	"io/fs"
+	"math/rand/v2"
 	"time"
 )
 
 // ConfigBackoff is the wait after the 1st, 2nd, 3rd, … consecutive failed
 // config fetch; the last value repeats.
 var ConfigBackoff = []time.Duration{5 * time.Second, 10 * time.Second, 30 * time.Second, 60 * time.Second}
+
+// AuthRetryDelay is the wait after the API rejected the token (401/403):
+// not transient, so do not hammer the API every 60 s.
+var AuthRetryDelay = 15 * time.Minute
+
+// JitterFraction: every wait is randomised by ±20 % so sensors that lost the
+// API at the same moment do not come back in lockstep.
+const JitterFraction = 0.2
 
 // BackoffDelay returns the wait after `failures` consecutive failures (>= 1).
 func BackoffDelay(failures int) time.Duration {
@@ -36,6 +45,13 @@ type Poller struct {
 
 	// sleep is replaced in tests; it returns false when ctx is done.
 	sleep func(ctx context.Context, d time.Duration) bool
+	// jitter is replaced in tests (nil = randomJitter).
+	jitter func(time.Duration) time.Duration
+}
+
+func randomJitter(d time.Duration) time.Duration {
+	f := 1 - JitterFraction + 2*JitterFraction*rand.Float64()
+	return time.Duration(float64(d) * f)
 }
 
 // LoadCache applies the cached config, if any. Call it before opening the
@@ -57,23 +73,33 @@ func (p *Poller) LoadCache() bool {
 }
 
 // Run fetches immediately and then forever until ctx is done. After a failed
-// fetch it waits BackoffDelay(consecutive failures); after a success it
-// applies and caches the config and waits Interval().
+// fetch it waits BackoffDelay(consecutive failures), after a 401/403
+// AuthRetryDelay; after a success it applies and caches the config and waits
+// Interval(). Every wait gets ±20 % jitter.
 func (p *Poller) Run(ctx context.Context) {
 	sleep := p.sleep
 	if sleep == nil {
 		sleep = sleepCtx
+	}
+	jitter := p.jitter
+	if jitter == nil {
+		jitter = randomJitter
 	}
 	failures := 0
 	everOK := false
 	for {
 		var wait time.Duration
 		cfg, err := p.Fetch()
-		if err != nil {
+		switch {
+		case err != nil && IsAuthError(err):
 			failures++
-			wait = BackoffDelay(failures)
-			Logf("config fetch failed (attempt %d, retry in %s): %v", failures, wait, err)
-		} else {
+			wait = jitter(AuthRetryDelay)
+			Logf("config fetch: JARNIS rejected HONEYPOT_TOKEN (%v) — check the token in the app (Honeypots → rotate) and recreate the container; retrying in %s", err, wait.Round(time.Second))
+		case err != nil:
+			failures++
+			wait = jitter(BackoffDelay(failures))
+			Logf("config fetch failed (attempt %d, retry in %s): %v", failures, wait.Round(time.Second), err)
+		default:
 			if failures > 0 || !everOK {
 				Logf("config ok name=%q designs=%d interval=%ds", cfg.Name, len(cfg.Services.HTTP.Designs), cfg.UpdateIntervalSeconds)
 			}
@@ -94,6 +120,7 @@ func (p *Poller) Run(ctx context.Context) {
 					wait = iv
 				}
 			}
+			wait = jitter(wait)
 		}
 		if !sleep(ctx, wait) {
 			return

@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -44,6 +46,7 @@ func newPoller(h *pollHarness, cache string, results []*Config) *Poller {
 			return r, nil
 		},
 	}
+	p.jitter = noJitter
 	p.sleep = func(_ context.Context, d time.Duration) bool {
 		h.sleeps = append(h.sleeps, d)
 		if i >= len(results) {
@@ -146,5 +149,71 @@ func TestFallbackDialer(t *testing.T) {
 	calls, _ = run(&fallbackDialer{Host: "jarnis.io", FallbackIP: "192.0.2.7"}, "api.ipify.org:443", map[string]bool{"api.ipify.org:443": true})
 	if len(calls) != 1 {
 		t.Fatalf("foreign host dialed %v", calls)
+	}
+}
+
+func noJitter(d time.Duration) time.Duration { return d }
+
+func TestRandomJitterWithin20Percent(t *testing.T) {
+	d := 60 * time.Second
+	lo, hi := d, d
+	for i := 0; i < 2000; i++ {
+		j := randomJitter(d)
+		if j < 48*time.Second || j > 72*time.Second {
+			t.Fatalf("jitter %v outside ±20%% of %v", j, d)
+		}
+		if j < lo {
+			lo = j
+		}
+		if j > hi {
+			hi = j
+		}
+	}
+	if lo > 52*time.Second || hi < 68*time.Second {
+		t.Fatalf("jitter not spread: %v..%v", lo, hi)
+	}
+}
+
+func TestPollerAuthErrorIsNotRetriedFast(t *testing.T) {
+	var sleeps []time.Duration
+	n := 0
+	p := &Poller{
+		Apply: func(*Config) {},
+		Fetch: func() (*Config, error) {
+			n++
+			if n <= 3 {
+				return nil, &StatusError{Op: "config", Code: 403 - (n%2)*2, Body: "forbidden"} // 401, 403, 401
+			}
+			return nil, errors.New("timeout")
+		},
+		jitter: noJitter,
+	}
+	p.sleep = func(_ context.Context, d time.Duration) bool {
+		sleeps = append(sleeps, d)
+		return n < 4
+	}
+	p.Run(context.Background())
+	want := []time.Duration{AuthRetryDelay, AuthRetryDelay, AuthRetryDelay, 60 * time.Second}
+	if !reflect.DeepEqual(sleeps, want) {
+		t.Fatalf("sleeps %v want %v", sleeps, want)
+	}
+}
+
+func TestFetchConfigReturnsAuthError(t *testing.T) {
+	prev := discoverPublicIPv4
+	discoverPublicIPv4 = func() string { return "" }
+	t.Cleanup(func() { discoverPublicIPv4 = prev })
+	for _, code := range []int{401, 403} {
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, "no", code)
+		}))
+		_, err := New(ts.URL+"/api", "", "hpt_x_1234567890123456789").FetchConfig()
+		ts.Close()
+		if !IsAuthError(err) {
+			t.Fatalf("%d: not an auth error: %v", code, err)
+		}
+	}
+	if IsAuthError(&StatusError{Code: 500}) || IsAuthError(errors.New("x")) {
+		t.Fatal("500/other must be transient")
 	}
 }
