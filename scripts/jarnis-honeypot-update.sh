@@ -33,7 +33,10 @@
 # the restore fully succeeded.
 # Exit status: 0 = every matching container is up to date and running,
 # recreated or skipped by policy; 1 = at least one recreate failed, or a
-# container with the current image is not running (see the log).
+# container with the current image is not running (see the log; set
+# ALLOW_STOPPED=1 for sensors that are stopped on purpose).
+# A container that a failed `docker create` left behind is recognised by the
+# unique com.jarnis.update-run label of that attempt and removed on rollback.
 # com.docker.compose.* labels are not carried over: after an update a
 # compose-managed sensor is a plain container (see README).
 #
@@ -53,6 +56,8 @@
 #   ENV_FILE=/root/jarnis-honeypot.env  # used only when NAME is set
 #   HEALTH_WAIT=8                 # seconds the new container must stay up (min 3)
 #   LOCK_FILE=/run/jarnis-honeypot-update.lock
+#   ALLOW_STOPPED=0               # 1: a stopped sensor with the current image
+#                                 # is only a warning (default: run fails)
 #
 # Running manually as a non-root member of the docker group: /run is not
 # writable, so set a lock file you own, e.g.
@@ -73,6 +78,7 @@ NAME=${NAME:-}
 ENV_FILE=${ENV_FILE:-/root/jarnis-honeypot.env}
 HEALTH_WAIT=${HEALTH_WAIT:-8}
 LOCK_FILE=${LOCK_FILE:-/run/jarnis-honeypot-update.lock}
+ALLOW_STOPPED=${ALLOW_STOPPED:-0}
 STATE_DIR=/var/lib/jarnis-honeypot
 
 log() { echo "$(date -u +'%Y-%m-%dT%H:%M:%SZ') $*"; }
@@ -90,6 +96,8 @@ RB_NAME=""        # original container name
 RB_OLD=""         # original container ID (set once it has been stopped)
 RB_NEW=""         # ID of the container created by this run
 RB_WAS_RUNNING=0
+RB_TOKEN=""       # value of the com.jarnis.update-run label of this recreate
+RUN_SEQ=0
 WORKDIR=""
 
 # Returns 0 only if the original container is back under its name (and
@@ -100,6 +108,18 @@ rollback() {
     rb_ok=0
     if [ -n "$RB_NEW" ]; then
         docker rm -f "$RB_NEW" >/dev/null 2>&1 || log "WARNING: could not remove new container $RB_NEW"
+    elif [ -n "$RB_TOKEN" ]; then
+        # docker create failed half-way: a container carrying this recreate's
+        # unique label may still hold the name and block the rename back.
+        for half in $(docker ps -aq --filter "label=com.jarnis.update-run=$RB_TOKEN" 2>/dev/null || true); do
+            if [ "$half" != "$RB_OLD" ]; then
+                if docker rm -f "$half" >/dev/null 2>&1; then
+                    log "removed half-created container $half"
+                else
+                    log "WARNING: could not remove half-created container $half"
+                fi
+            fi
+        done
     fi
     if [ -n "$RB_OLD" ]; then
         rb_exists=1
@@ -128,6 +148,7 @@ rollback() {
     RB_NAME=""
     RB_OLD=""
     RB_NEW=""
+    RB_TOKEN=""
     RB_WAS_RUNNING=0
     return "$rb_ok"
 }
@@ -287,7 +308,7 @@ container_labels() {
     img=$(docker inspect --format '{{.Image}}' "$cid") || return 1
     docker inspect --format "$fmt" "$cid" > "$out.c" || return 1
     docker image inspect --format "$fmt" "$img" > "$out.i" 2>/dev/null || : > "$out.i"
-    grep -vxF -f "$out.i" "$out.c" | grep -v -e '^com\.jarnis\.honeypot=' -e '^com\.docker\.compose\.' -e '^$' > "$out" || true
+    grep -vxF -f "$out.i" "$out.c" | grep -v -e '^com\.jarnis\.honeypot=' -e '^com\.jarnis\.update-run=' -e '^com\.docker\.compose\.' -e '^$' > "$out" || true
     rm -f "$out.c" "$out.i"
 }
 
@@ -359,6 +380,8 @@ recreate() {
     old="${cname}.jarnis-prev.$$"
     log "updating $cname"
     RB_NAME=$cname
+    RUN_SEQ=$((RUN_SEQ + 1))
+    RB_TOKEN="$(date +%s).$$.$RUN_SEQ"
     RB_WAS_RUNNING=0
     [ "$running" = "true" ] && RB_WAS_RUNNING=1
     if ! docker stop "$cid" >/dev/null; then
@@ -367,6 +390,7 @@ recreate() {
             docker start "$cid" >/dev/null 2>&1 || true
         fi
         RB_NAME=""
+        RB_TOKEN=""
         return 1
     fi
     # From here on rollback() restores the original, addressed by its ID.
@@ -384,6 +408,7 @@ recreate() {
         --tmpfs /tmp:size=8m,mode=1777 \
         --label-file "$labelf" \
         --label com.jarnis.honeypot=1 \
+        --label "com.jarnis.update-run=$RB_TOKEN" \
         --env-file "$envf" \
         $opts \
         $ports \
@@ -432,6 +457,7 @@ recreate() {
     RB_NAME=""
     RB_OLD=""
     RB_NEW=""
+    RB_TOKEN=""
     RB_WAS_RUNNING=0
     if ! docker rm "$cid" >/dev/null; then
         log "WARNING: new $cname is running, but the previous container $cid could not be removed"
@@ -510,8 +536,12 @@ for cid in $ids; do
         # must not pass as "up to date": warn and fail the run.
         state=$(docker inspect --format '{{.State.Running}}' "$cid" 2>/dev/null || true)
         if [ "$state" != "true" ]; then
-            log "ERROR: $cname has the current image but is NOT running — check 'docker ps -a' and start it (docker start $cname)"
-            stopped=$((stopped + 1))
+            if [ "$ALLOW_STOPPED" = 1 ]; then
+                log "WARNING: $cname has the current image but is not running (ALLOW_STOPPED=1 — not failing)"
+            else
+                log "ERROR: $cname has the current image but is NOT running — check 'docker ps -a' and start it (docker start $cname); set ALLOW_STOPPED=1 if it is stopped on purpose"
+                stopped=$((stopped + 1))
+            fi
             continue
         fi
         log "up to date $cname"
