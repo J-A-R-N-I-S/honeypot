@@ -139,3 +139,21 @@ func TestTelnetPipelinedCredentials(t *testing.T) {
 		t.Fatalf("%+v", ev)
 	}
 }
+
+func TestTelnetPanicIsRecovered(t *testing.T) {
+	s := &Server{Addr: "127.0.0.1:0", Banner: func() string { panic("boom") }}
+	if err := s.Listen(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	go func() { _ = s.Serve() }()
+	for i := 0; i < 2; i++ {
+		c, err := net.Dial("tcp", s.ListenAddr().String())
+		if err != nil {
+			t.Fatalf("listener gone after panic: %v", err)
+		}
+		_ = c.SetDeadline(time.Now().Add(2 * time.Second))
+		_, _ = io.ReadAll(c) // server closes after recovering
+		_ = c.Close()
+	}
+}

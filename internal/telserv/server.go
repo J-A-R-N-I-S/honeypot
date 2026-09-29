@@ -101,6 +101,11 @@ func (s *Server) handle(c net.Conn) {
 	defer c.Close()
 	_ = c.SetDeadline(time.Now().Add(30 * time.Second))
 	src, sport := netaddr.Split(c.RemoteAddr().String())
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("telnet: recovered panic in connection from %s: %v", src, r)
+		}
+	}()
 
 	captured := false
 	defer func() {

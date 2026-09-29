@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -212,4 +213,28 @@ func contains(list []string, v string) bool {
 		}
 	}
 	return false
+}
+
+func TestPanicInConnectionIsRecovered(t *testing.T) {
+	var calls atomic.Int32
+	s := startSSHWith(t, &Server{Banner: func() string {
+		if calls.Add(1) == 1 {
+			panic("boom")
+		}
+		return "ok\n"
+	}})
+	cfg := &ssh.ClientConfig{
+		User:            "root",
+		Auth:            []ssh.AuthMethod{ssh.Password("x")},
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		Timeout:         4 * time.Second,
+	}
+	_, _ = ssh.Dial("tcp", s.Addr, cfg) // panics server-side, must be recovered
+	// The listener still serves.
+	if got := readIdentWithoutSending(t, s.Addr); !strings.HasPrefix(got, "SSH-2.0-") {
+		t.Fatalf("server gone after panic: %q", got)
+	}
+	if calls.Load() < 1 {
+		t.Fatal("banner callback (panic) never ran")
+	}
 }

@@ -136,6 +136,13 @@ func (s *Server) handle(nc net.Conn, signer ssh.Signer) {
 	defer nc.Close()
 	_ = nc.SetDeadline(time.Now().Add(45 * time.Second))
 	src, sport := netaddr.Split(nc.RemoteAddr().String())
+	// A panic in one connection (e.g. a bug in the SSH library triggered by
+	// a hostile client) must not take down the sensor: log and close.
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("ssh: recovered panic in connection from %s: %v", src, r)
+		}
+	}()
 
 	// Send our identification string first, before reading anything: real
 	// sshd does, and banner grabbers / scanners wait for it (RFC 4253 4.2

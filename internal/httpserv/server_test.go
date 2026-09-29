@@ -130,3 +130,14 @@ func min(a, b int) int {
 	}
 	return b
 }
+
+func TestHTTPPanicIsRecovered(t *testing.T) {
+	s := &Server{Designs: func() []jarnis.Design { panic("boom") }}
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "203.0.113.9:7"
+	w := httptest.NewRecorder()
+	s.handle(w, req)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("code %d", w.Code)
+	}
+}

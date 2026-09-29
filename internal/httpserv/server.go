@@ -97,6 +97,18 @@ func (s *Server) Close() error {
 
 func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	src, sport := netaddr.Split(r.RemoteAddr)
+	// net/http would recover too, but log it our way and close the
+	// connection instead of printing a stack trace per hostile request.
+	defer func() {
+		if rec := recover(); rec != nil {
+			if rec == http.ErrAbortHandler {
+				panic(rec)
+			}
+			log.Printf("http: recovered panic in request from %s: %v", src, rec)
+			w.Header().Set("Connection", "close")
+			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		}
+	}()
 	allowed := r.Method == http.MethodGet || r.Method == http.MethodPost || r.Method == http.MethodHead
 
 	user, pass := "", ""
