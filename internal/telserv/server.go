@@ -132,12 +132,15 @@ func (s *Server) handle(c net.Conn) {
 		_, _ = io.WriteString(c, banner)
 	}
 	_, _ = io.WriteString(c, "login: ")
-	user, err := readLine(c)
+	// One reader per connection: bots pipeline "user\r\npass\r\n", and a
+	// fresh bufio.Reader per line would drop the buffered password.
+	r := bufio.NewReader(c)
+	user, err := readLine(r)
 	if err != nil {
 		return
 	}
 	_, _ = io.WriteString(c, "Password: ")
-	pass, err := readLine(c)
+	pass, err := readLine(r)
 	if err != nil {
 		return
 	}
@@ -158,8 +161,7 @@ func (s *Server) handle(c net.Conn) {
 	_, _ = io.WriteString(c, "\r\nLogin incorrect\r\n")
 }
 
-func readLine(c net.Conn) (string, error) {
-	r := bufio.NewReader(c)
+func readLine(r *bufio.Reader) (string, error) {
 	var b strings.Builder
 	for {
 		by, err := r.ReadByte()

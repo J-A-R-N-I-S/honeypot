@@ -115,3 +115,27 @@ func TestTelnetConnectWithoutCreds(t *testing.T) {
 		t.Fatalf("missing source %+v", ev)
 	}
 }
+
+// Bots send username and password in one segment; both must be captured.
+func TestTelnetPipelinedCredentials(t *testing.T) {
+	var mu sync.Mutex
+	var got []queue.Event
+	s := startTel(t, func(ev queue.Event) {
+		mu.Lock()
+		got = append(got, ev)
+		mu.Unlock()
+	})
+	c, err := net.Dial("tcp", s.Addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	_ = c.SetDeadline(time.Now().Add(3 * time.Second))
+	if _, err := io.WriteString(c, "bob\r\nhunter2\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	ev := waitOne(t, &mu, &got)
+	if ev.EventType != "login_attempt" || ev.Username != "bob" || ev.Password != "hunter2" {
+		t.Fatalf("%+v", ev)
+	}
+}
