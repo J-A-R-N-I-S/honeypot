@@ -135,27 +135,43 @@ func NormalizeAPI(raw string) string {
 	return s
 }
 
+// DefaultAPIFallbackIP is dialed for the API host (jarnis.io) only when the
+// normal DNS-based connect fails, e.g. on networks whose firewall blocks
+// public DNS resolvers. TLS is still verified against the host name, so a
+// wrong or stale IP can only make the fallback fail, never impersonate the
+// API. Override or disable with JARNIS_API_FALLBACK_IP.
+const DefaultAPIFallbackIP = "116.204.196.220"
+
+// Options tune the control-plane client.
+type Options struct {
+	// FallbackIP is dialed for the API host when resolving or connecting to
+	// it by name fails. "" disables the fallback.
+	FallbackIP string
+}
+
+// New returns a client with the default options (DNS first, fallback IP
+// DefaultAPIFallbackIP).
 func New(api, honeypotID, token string) *Client {
+	return NewWithOptions(api, honeypotID, token, Options{FallbackIP: DefaultAPIFallbackIP})
+}
+
+func NewWithOptions(api, honeypotID, token string, opt Options) *Client {
 	base := NormalizeAPI(api)
-	pin := "116.204.196.220"
 	u, _ := url.Parse(base)
 	sni := "jarnis.io"
+	apiHost := ""
 	if u != nil && u.Hostname() != "" && net.ParseIP(u.Hostname()) == nil {
 		sni = u.Hostname()
+		apiHost = u.Hostname()
+	}
+	fd := &fallbackDialer{
+		Host:       apiHost,
+		FallbackIP: opt.FallbackIP,
+		Dial:       (&net.Dialer{Timeout: 7 * time.Second}).DialContext,
 	}
 	tr := &http.Transport{
-		Proxy: nil,
-		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			host, port, err := net.SplitHostPort(addr)
-			if err != nil || port == "" {
-				host, port = addr, "443"
-			}
-			if host == "jarnis.io" {
-				host = pin
-			}
-			d := net.Dialer{Timeout: 10 * time.Second}
-			return d.DialContext(ctx, "tcp", net.JoinHostPort(host, port))
-		},
+		Proxy:               nil,
+		DialContext:         fd.DialContext,
 		TLSClientConfig:     &tls.Config{ServerName: sni, MinVersion: tls.VersionTLS12},
 		ForceAttemptHTTP2:   true,
 		TLSHandshakeTimeout: 10 * time.Second,
@@ -172,6 +188,34 @@ func New(api, honeypotID, token string) *Client {
 			},
 		},
 	}
+}
+
+// fallbackDialer connects by name (normal DNS) and, for the API host only,
+// retries on FallbackIP when that fails.
+type fallbackDialer struct {
+	Host       string // API host name; "" = never fall back
+	FallbackIP string
+	Dial       func(ctx context.Context, network, addr string) (net.Conn, error)
+}
+
+func (d *fallbackDialer) DialContext(ctx context.Context, network, addr string) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil || port == "" {
+		host, port = addr, "443"
+	}
+	target := net.JoinHostPort(host, port)
+	conn, err := d.Dial(ctx, "tcp", target)
+	if err == nil {
+		return conn, nil
+	}
+	if d.FallbackIP == "" || d.Host == "" || !strings.EqualFold(host, d.Host) || ctx.Err() != nil {
+		return nil, err
+	}
+	conn, ferr := d.Dial(ctx, "tcp", net.JoinHostPort(d.FallbackIP, port))
+	if ferr != nil {
+		return nil, fmt.Errorf("%w; fallback %s: %v", err, d.FallbackIP, ferr)
+	}
+	return conn, nil
 }
 
 func (c *Client) FetchConfig() (*Config, error) {

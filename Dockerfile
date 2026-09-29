@@ -11,6 +11,9 @@ RUN short=$(printf '%s' "$VERSION" | cut -c1-12) \
     -o /out/jarnis-honeypot ./cmd/jarnis-honeypot
 
 FROM alpine:3.20
+# /var/lib/jarnis-honeypot: state volume (SSH host key + config.json cache).
+# root:root 0700 — the sensor runs as root with all capabilities dropped, so
+# it can write here only as the owner. A new named volume inherits this.
 RUN apk add --no-cache ca-certificates \
     && mkdir -p /var/lib/jarnis-honeypot \
     && chmod 700 /var/lib/jarnis-honeypot

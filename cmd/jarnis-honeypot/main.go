@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"log"
+	"net"
 	"os"
 	"os/signal"
 	"strconv"
@@ -39,6 +41,23 @@ func validToken(t string) bool {
 	return len(t) >= 20 && t != "${HONEYPOT_TOKEN}"
 }
 
+// fallbackIPFromEnv reads JARNIS_API_FALLBACK_IP: unset/empty = default,
+// "off"/"none" = disabled, otherwise an IP literal.
+func fallbackIPFromEnv() string {
+	v := strings.TrimSpace(os.Getenv("JARNIS_API_FALLBACK_IP"))
+	switch strings.ToLower(v) {
+	case "":
+		return jarnis.DefaultAPIFallbackIP
+	case "off", "none":
+		return ""
+	}
+	if net.ParseIP(v) == nil {
+		log.Printf("ignoring invalid JARNIS_API_FALLBACK_IP %q — using %s", v, jarnis.DefaultAPIFallbackIP)
+		return jarnis.DefaultAPIFallbackIP
+	}
+	return v
+}
+
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmsgprefix)
 	log.SetPrefix("jarnis-hp ")
@@ -59,7 +78,7 @@ func main() {
 	telPort := envInt("TELNET_CONTAINER_PORT", 23)
 	httpPort := envInt("HTTP_CONTAINER_PORT", 8080)
 
-	cli := jarnis.New("https://jarnis.io/api", "", token)
+	cli := jarnis.NewWithOptions("https://jarnis.io/api", "", token, jarnis.Options{FallbackIP: fallbackIPFromEnv()})
 	q := queue.New(500)
 
 	var mu sync.RWMutex
@@ -122,12 +141,50 @@ func main() {
 	tracker := probe.New()
 	report := tracker.Report(func(ev queue.Event) { q.Push(ev) })
 
-	if cfg, err := cli.FetchConfig(); err != nil {
-		log.Printf("config fetch failed (will retry): %v", err)
-	} else {
-		apply(cfg)
-		log.Printf("config ok name=%q designs=%d interval=%ds", cfg.Name, len(cfg.Services.HTTP.Designs), cfg.UpdateIntervalSeconds)
+	cachePath := strings.TrimSpace(os.Getenv("CONFIG_CACHE_PATH"))
+	switch strings.ToLower(cachePath) {
+	case "":
+		cachePath = jarnis.DefaultConfigCachePath
+	case "off", "none":
+		cachePath = ""
 	}
+	poller := &jarnis.Poller{
+		Fetch:     cli.FetchConfig,
+		Apply:     apply,
+		CachePath: cachePath,
+		Interval: func() time.Duration {
+			mu.RLock()
+			defer mu.RUnlock()
+			return time.Duration(interval) * time.Second
+		},
+	}
+	// Last good config first (banners, designs, honeypot ID), so the sensor
+	// is fully functional even when the API is unreachable at startup.
+	poller.LoadCache()
+
+	// Open every port BEFORE talking to the API: a slow or unreachable
+	// control plane must never keep the decoy offline.
+	sshSrv := &sshserv.Server{Addr: ":" + strconv.Itoa(sshPort), KeyPath: "/var/lib/jarnis-honeypot/ssh_host_ecdsa", Banner: bannerSSH, Version: sshVersion, Report: report}
+	if err := sshSrv.Listen(); err != nil {
+		log.Fatalf("ssh listen %s: %v", sshSrv.Addr, err)
+	}
+	telSrv := &telserv.Server{Addr: ":" + strconv.Itoa(telPort), Banner: bannerTel, Report: report}
+	if err := telSrv.Listen(); err != nil {
+		log.Fatalf("telnet listen %s: %v", telSrv.Addr, err)
+	}
+	httpSrv := &httpserv.Server{Addr: ":" + strconv.Itoa(httpPort), Designs: designs, Mode: mode, Report: report}
+	if err := httpSrv.Listen(); err != nil {
+		log.Fatalf("http listen %s: %v", httpSrv.Addr, err)
+	}
+	go func() { log.Fatalf("ssh: %v", sshSrv.Serve()) }()
+	go func() { log.Fatalf("telnet: %v", telSrv.Serve()) }()
+	go func() { log.Fatalf("http: %v", httpSrv.Serve()) }()
+
+	log.Printf("sensor up ports ssh=:%d telnet=:%d http=:%d", sshPort, telPort, httpPort)
+	log.Printf("no interactive login is possible — credentials are captured and sent to JARNIS only")
+
+	// Config: fetch now, retry with backoff 5s/10s/30s/60s/60s…, then poll.
+	go poller.Run(context.Background())
 
 	go func() {
 		for {
@@ -147,46 +204,6 @@ func main() {
 			}
 		}
 	}()
-
-	go func() {
-		for {
-			mu.RLock()
-			wait := interval
-			mu.RUnlock()
-			if wait < 30 {
-				wait = 30
-			}
-			time.Sleep(time.Duration(wait) * time.Second)
-			cfg, err := cli.FetchConfig()
-			if err != nil {
-				log.Printf("config poll: %v", err)
-				continue
-			}
-			apply(cfg)
-		}
-	}()
-
-	go func() {
-		s := &sshserv.Server{Addr: ":" + strconv.Itoa(sshPort), KeyPath: "/var/lib/jarnis-honeypot/ssh_host_ecdsa", Banner: bannerSSH, Version: sshVersion, Report: report}
-		if err := s.ListenAndServe(); err != nil {
-			log.Fatalf("ssh listen %s: %v", s.Addr, err)
-		}
-	}()
-	go func() {
-		s := &telserv.Server{Addr: ":" + strconv.Itoa(telPort), Banner: bannerTel, Report: report}
-		if err := s.ListenAndServe(); err != nil {
-			log.Fatalf("telnet: %v", err)
-		}
-	}()
-	go func() {
-		s := &httpserv.Server{Addr: ":" + strconv.Itoa(httpPort), Designs: designs, Mode: mode, Report: report}
-		if err := s.ListenAndServe(); err != nil {
-			log.Fatalf("http: %v", err)
-		}
-	}()
-
-	log.Printf("sensor up ports ssh=:%d telnet=:%d http=:%d", sshPort, telPort, httpPort)
-	log.Printf("no interactive login is possible — credentials are captured and sent to JARNIS only")
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)

@@ -22,7 +22,10 @@ services:
     tmpfs:
       - /tmp:size=8m,mode=1777
     volumes:
-      # SSH host key (ssh_host_ecdsa) — keeps the fingerprint across recreates.
+      # State (root:root 0700): SSH host key (ssh_host_ecdsa, keeps the
+      # fingerprint across recreates) and the last good config (config.json,
+      # 0600; lets the sensor start with its banners/designs while the JARNIS
+      # API is unreachable). Keep this volume across updates.
       - jarnis-honeypot-state:/var/lib/jarnis-honeypot
     labels:
       com.jarnis.honeypot: "1"

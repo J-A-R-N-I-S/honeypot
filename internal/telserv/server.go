@@ -2,6 +2,7 @@ package telserv
 
 import (
 	"bufio"
+	"errors"
 	"io"
 	"log"
 	"net"
@@ -31,7 +32,8 @@ type Server struct {
 	listener net.Listener
 }
 
-func (s *Server) ListenAndServe() error {
+// Listen opens the TCP listener without accepting yet (see Serve).
+func (s *Server) Listen() error {
 	ln, err := net.Listen("tcp", s.Addr)
 	if err != nil {
 		return err
@@ -39,7 +41,18 @@ func (s *Server) ListenAndServe() error {
 	s.mu.Lock()
 	s.listener = ln
 	s.mu.Unlock()
-	log.Printf("telnet listen %s (auth always denied)", s.Addr)
+	log.Printf("telnet listen %s (auth always denied)", ln.Addr())
+	return nil
+}
+
+// Serve accepts connections on the listener opened by Listen.
+func (s *Server) Serve() error {
+	s.mu.Lock()
+	ln := s.listener
+	s.mu.Unlock()
+	if ln == nil {
+		return errors.New("telserv: Serve called before Listen")
+	}
 	sem := make(chan struct{}, 64)
 	for {
 		c, err := ln.Accept()
@@ -56,6 +69,23 @@ func (s *Server) ListenAndServe() error {
 			_ = c.Close()
 		}
 	}
+}
+
+func (s *Server) ListenAndServe() error {
+	if err := s.Listen(); err != nil {
+		return err
+	}
+	return s.Serve()
+}
+
+// ListenAddr is the bound address after Listen.
+func (s *Server) ListenAddr() net.Addr {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.listener == nil {
+		return nil
+	}
+	return s.listener.Addr()
 }
 
 func (s *Server) Close() error {
