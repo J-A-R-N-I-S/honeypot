@@ -1,5 +1,7 @@
 # syntax=docker/dockerfile:1
-FROM golang:1.23-alpine AS build
+# Go version: keep in sync with the toolchain line in go.mod and the CI
+# workflow (.github/workflows/image.yml).
+FROM golang:1.27.1-alpine3.24 AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
@@ -10,7 +12,7 @@ RUN short=$(printf '%s' "$VERSION" | cut -c1-12) \
     go build -trimpath -ldflags="-s -w -X github.com/j-a-r-n-i-s/honeypot/internal/jarnis.Version=${short}" \
     -o /out/jarnis-honeypot ./cmd/jarnis-honeypot
 
-FROM alpine:3.20
+FROM alpine:3.24
 # /var/lib/jarnis-honeypot: state volume (SSH host key + config.json cache).
 # root:root 0700 — the sensor runs as root with all capabilities dropped, so
 # it can write here only as the owner. A new named volume inherits this.
