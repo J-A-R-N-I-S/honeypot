@@ -25,10 +25,14 @@ func BackoffDelay(failures int) time.Duration {
 // Poller keeps the live config fresh: last good config from the cache at
 // startup, then fetch with backoff until it works, then poll every interval.
 type Poller struct {
-	Fetch     func() (*Config, error)
-	Apply     func(*Config)
-	Interval  func() time.Duration // wait after a successful fetch
-	CachePath string               // "" disables the cache
+	Fetch func() (*Config, error)
+	// Apply installs a config for the listeners (banners, designs, interval).
+	// Cached configs never carry a honeypotId.
+	Apply func(*Config)
+	// SetIdentity receives the honeypotId of each successful LIVE fetch only.
+	SetIdentity func(id string)
+	Interval    func() time.Duration // wait after a successful fetch
+	CachePath   string               // "" disables the cache
 
 	// sleep is replaced in tests; it returns false when ctx is done.
 	sleep func(ctx context.Context, d time.Duration) bool
@@ -75,6 +79,9 @@ func (p *Poller) Run(ctx context.Context) {
 			}
 			failures = 0
 			everOK = true
+			if p.SetIdentity != nil && cfg.HoneypotID != "" {
+				p.SetIdentity(cfg.HoneypotID)
+			}
 			p.Apply(cfg)
 			if p.CachePath != "" {
 				if _, err := SaveConfigCache(p.CachePath, cfg); err != nil {

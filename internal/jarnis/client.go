@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -49,10 +50,29 @@ func AgentString() string {
 
 // Client talks to the JARNIS control plane (config poll + credential backhaul).
 type Client struct {
-	API        string
-	HoneypotID string
-	Token      string
-	HTTP       *http.Client
+	API   string
+	Token string
+	HTTP  *http.Client
+
+	idMu       sync.RWMutex
+	honeypotID string
+}
+
+// HoneypotID is the sensor identity sent with every request ("" until the
+// first successful live config fetch, unless set by the constructor).
+func (c *Client) HoneypotID() string {
+	c.idMu.RLock()
+	defer c.idMu.RUnlock()
+	return c.honeypotID
+}
+
+// SetHoneypotID updates the identity. Only call it with the honeypotId of a
+// live, validated config response — never with a cached value: the API
+// rejects (403) a honeypotId that does not belong to the token.
+func (c *Client) SetHoneypotID(id string) {
+	c.idMu.Lock()
+	c.honeypotID = id
+	c.idMu.Unlock()
 }
 
 type ServiceSSH struct {
@@ -178,7 +198,7 @@ func NewWithOptions(api, honeypotID, token string, opt Options) *Client {
 	}
 	return &Client{
 		API:        base,
-		HoneypotID: honeypotID,
+		honeypotID: honeypotID,
 		Token:      token,
 		HTTP: &http.Client{
 			Timeout:   20 * time.Second,
@@ -224,8 +244,8 @@ func (c *Client) FetchConfig() (*Config, error) {
 		return nil, err
 	}
 	q := u.Query()
-	if c.HoneypotID != "" {
-		q.Set("honeypotId", c.HoneypotID)
+	if id := c.HoneypotID(); id != "" {
+		q.Set("honeypotId", id)
 	}
 	// Refresh egress IP on each config poll; best-effort, never fails the request.
 	if ip := refreshPublicIP(); ip != "" {
@@ -258,7 +278,7 @@ func (c *Client) FetchConfig() (*Config, error) {
 }
 
 func (c *Client) PostCredential(ev CredEvent) error {
-	ev.HoneypotID = c.HoneypotID
+	ev.HoneypotID = c.HoneypotID()
 	// Body token survives proxies that strip Authorization on POST.
 	ev.Token = c.Token
 	if ev.EventType == "" {

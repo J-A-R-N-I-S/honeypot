@@ -105,9 +105,7 @@ func main() {
 		if cfg.UpdateIntervalSeconds >= 30 {
 			interval = cfg.UpdateIntervalSeconds
 		}
-		if cfg.HoneypotID != "" {
-			cli.HoneypotID = cfg.HoneypotID
-		}
+		// Identity is NOT taken from here: see Poller.SetIdentity.
 	}
 	bannerSSH := func() string {
 		mu.RLock()
@@ -149,17 +147,18 @@ func main() {
 		cachePath = ""
 	}
 	poller := &jarnis.Poller{
-		Fetch:     cli.FetchConfig,
-		Apply:     apply,
-		CachePath: cachePath,
+		Fetch:       cli.FetchConfig,
+		Apply:       apply,
+		SetIdentity: cli.SetHoneypotID,
+		CachePath:   cachePath,
 		Interval: func() time.Duration {
 			mu.RLock()
 			defer mu.RUnlock()
 			return time.Duration(interval) * time.Second
 		},
 	}
-	// Last good config first (banners, designs, honeypot ID), so the sensor
-	// is fully functional even when the API is unreachable at startup.
+	// Last good config first (banners, designs — never the honeypot ID), so
+	// the listeners have the right look even when the API is unreachable.
 	poller.LoadCache()
 
 	// Open every port BEFORE talking to the API: a slow or unreachable

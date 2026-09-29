@@ -19,13 +19,18 @@ const maxConfigCacheBytes = 2 << 20 // same limit as the config fetch
 // SaveConfigCache writes cfg to path atomically (temp file in the same
 // directory, fsync, rename, fsync dir) with mode 0600; the directory is
 // created with mode 0700 if missing. Only the fields of Config are written —
-// never the HONEYPOT_TOKEN, which is not part of Config. It returns
-// changed=false (and does not touch the file) when the content is identical.
+// never the HONEYPOT_TOKEN, which is not part of Config — and the honeypotId
+// is blanked: identity always comes from a live fetch (a volume reused with
+// a new token must not pin the old id, which the API answers with 403).
+// It returns changed=false (and does not touch the file) when the content
+// is identical.
 func SaveConfigCache(path string, cfg *Config) (changed bool, err error) {
 	if cfg == nil {
 		return false, fmt.Errorf("nil config")
 	}
-	data, err := json.Marshal(cfg)
+	c := *cfg
+	c.HoneypotID = ""
+	data, err := json.Marshal(&c)
 	if err != nil {
 		return false, err
 	}
@@ -72,6 +77,8 @@ func LoadConfigCache(path string) (*Config, error) {
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("config cache %s: %w", path, err)
 	}
+	// Never trust an identity from disk (older files may still carry one).
+	cfg.HoneypotID = ""
 	if cfg.UpdateIntervalSeconds < 30 {
 		cfg.UpdateIntervalSeconds = 30
 	}

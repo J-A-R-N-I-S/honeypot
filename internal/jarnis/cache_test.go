@@ -43,7 +43,7 @@ func TestConfigCacheWriteReadPerms(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Name != "a" || got.HoneypotID != "hp_1" || len(got.Services.HTTP.Designs) != 1 || got.Services.SSH.Banner != "hello\n" {
+	if got.Name != "a" || got.HoneypotID != "" || len(got.Services.HTTP.Designs) != 1 || got.Services.SSH.Banner != "hello\n" {
 		t.Fatalf("round trip %+v", got)
 	}
 }
