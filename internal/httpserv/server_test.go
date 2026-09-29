@@ -1,6 +1,8 @@
 package httpserv
 
 import (
+	"bytes"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -139,5 +141,26 @@ func TestHTTPPanicIsRecovered(t *testing.T) {
 	s.handle(w, req)
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("code %d", w.Code)
+	}
+}
+
+func TestHTTPCaptureLogIsEscaped(t *testing.T) {
+	var buf bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(prev) })
+	s := &Server{
+		Designs: func() []jarnis.Design { return nil },
+		Mode:    func() string { return "sticky-per-ip" },
+		Report:  func(queue.Event) {},
+	}
+	form := url.Values{"username": {"admin\n2026/01/01 00:00:00 FORGED"}, "password": {"x"}}
+	req := httptest.NewRequest(http.MethodPost, "/login%0aFORGED2", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.RemoteAddr = "203.0.113.9:5555"
+	s.handle(httptest.NewRecorder(), req)
+	out := strings.TrimRight(buf.String(), "\n")
+	if !strings.Contains(out, "http capture") || strings.Contains(out, "\n") {
+		t.Fatalf("log injection / missing log: %q", out)
 	}
 }

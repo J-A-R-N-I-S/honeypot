@@ -4,10 +4,12 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/rand"
+	"log"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -237,4 +239,52 @@ func TestPanicInConnectionIsRecovered(t *testing.T) {
 	if calls.Load() < 1 {
 		t.Fatal("banner callback (panic) never ran")
 	}
+}
+
+// Usernames are attacker-controlled: they must not be able to forge log
+// lines (log injection).
+func TestUsernameIsEscapedInLog(t *testing.T) {
+	var buf safeBuffer
+	prev := log.Writer()
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(prev) })
+
+	s := startSSHWith(t, &Server{})
+	cfg := &ssh.ClientConfig{
+		User:            "root\n2026/01/01 00:00:00 jarnis-hp FORGED\x1b[31m",
+		Auth:            []ssh.AuthMethod{ssh.Password("x")},
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		Timeout:         4 * time.Second,
+	}
+	_, _ = ssh.Dial("tcp", s.Addr, cfg)
+	deadline := time.Now().Add(2 * time.Second)
+	for !strings.Contains(buf.String(), "ssh capture") && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "ssh capture") {
+		t.Fatalf("no capture log: %q", out)
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, "2026/01/01") || strings.Contains(line, "\x1b") {
+			t.Fatalf("log injection: %q", out)
+		}
+	}
+}
+
+type safeBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (s *safeBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *safeBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
 }

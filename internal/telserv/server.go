@@ -161,7 +161,7 @@ func (s *Server) handle(c net.Conn) {
 			Summary:    "TELNET login_attempt user=" + user,
 		})
 	}
-	jarnis.Logf("telnet capture %s user=%s (denied)", src, user)
+	jarnis.Logf("telnet capture %s user=%q (denied)", src, user)
 	time.Sleep(400 * time.Millisecond)
 	_, _ = io.WriteString(c, "\r\nLogin incorrect\r\n")
 }

@@ -202,7 +202,7 @@ func (s *Server) handle(nc net.Conn, signer ssh.Signer) {
 					},
 				})
 			}
-			jarnis.Logf("ssh capture %s user=%s (denied)", src, user)
+			jarnis.Logf("ssh capture %s user=%q (denied)", src, user)
 			return nil, fmt.Errorf("permission denied")
 		},
 		PublicKeyCallback: rejectKey,
@@ -230,7 +230,7 @@ func (s *Server) handle(nc net.Conn, signer ssh.Signer) {
 		ident = v
 	}
 	// If we ever got here, a future bug granted auth. Tear down immediately.
-	log.Printf("ssh unexpected authenticated conn from %s user=%s — closing", src, conn.User())
+	log.Printf("ssh unexpected authenticated conn from %s user=%q — closing", src, conn.User())
 	_ = conn.Close()
 	go ssh.DiscardRequests(reqs)
 	for ch := range chans {

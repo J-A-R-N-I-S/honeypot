@@ -130,7 +130,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 				Summary:    "HTTP login_attempt user=" + user,
 				Raw:        raw,
 			})
-			jarnis.Logf("http capture %s user=%s path=%s (denied)", src, user, r.URL.Path)
+			jarnis.Logf("http capture %s user=%q path=%q (denied)", src, user, r.URL.Path)
 		} else {
 			s.Report(queue.Event{
 				Service:    "http",
