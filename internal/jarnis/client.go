@@ -112,10 +112,10 @@ type ServiceHTTP struct {
 }
 
 type Config struct {
-	OK                    bool   `json:"ok"`
-	HoneypotID            string `json:"honeypotId"`
-	Name                  string `json:"name"`
-	Status                string `json:"status"`
+	OK                    bool            `json:"ok"`
+	HoneypotID            string          `json:"honeypotId"`
+	Name                  string          `json:"name"`
+	Status                string          `json:"status"`
 	UpdateIntervalSeconds IntervalSeconds `json:"updateIntervalSeconds"`
 	Services              struct {
 		SSH    ServiceSSH    `json:"ssh"`
