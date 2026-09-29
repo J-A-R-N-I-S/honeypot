@@ -1,13 +1,17 @@
 package jarnis
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -215,5 +219,23 @@ func TestFetchConfigReturnsAuthError(t *testing.T) {
 	}
 	if IsAuthError(&StatusError{Code: 500}) || IsAuthError(errors.New("x")) {
 		t.Fatal("500/other must be transient")
+	}
+}
+
+func TestCacheWriteFailureLoggedOnce(t *testing.T) {
+	var buf bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(prev) })
+
+	dir := t.TempDir()
+	blocker := filepath.Join(dir, "file")
+	_ = os.WriteFile(blocker, nil, 0o600)
+	h := &pollHarness{}
+	// parent "directory" is a file: every write fails
+	p := newPoller(h, filepath.Join(blocker, "config.json"), []*Config{sampleConfig("a"), sampleConfig("b"), sampleConfig("c")})
+	p.Run(context.Background())
+	if n := strings.Count(buf.String(), "config cache not written"); n != 1 {
+		t.Fatalf("logged %d times:\n%s", n, buf.String())
 	}
 }

@@ -47,6 +47,22 @@ type Poller struct {
 	sleep func(ctx context.Context, d time.Duration) bool
 	// jitter is replaced in tests (nil = randomJitter).
 	jitter func(time.Duration) time.Duration
+
+	cacheFailing bool // a cache write failed and was logged
+}
+
+// saveCache writes the cache; a failing write is logged once (not on every
+// poll) until a write succeeds again.
+func (p *Poller) saveCache(cfg *Config) {
+	_, err := SaveConfigCache(p.CachePath, cfg)
+	switch {
+	case err != nil && !p.cacheFailing:
+		p.cacheFailing = true
+		Logf("config cache not written (%v) — mount a volume on /var/lib/jarnis-honeypot; not logged again until it works", err)
+	case err == nil && p.cacheFailing:
+		p.cacheFailing = false
+		Logf("config cache %s written again", p.CachePath)
+	}
 }
 
 func randomJitter(d time.Duration) time.Duration {
@@ -110,9 +126,7 @@ func (p *Poller) Run(ctx context.Context) {
 			}
 			p.Apply(cfg)
 			if p.CachePath != "" {
-				if _, err := SaveConfigCache(p.CachePath, cfg); err != nil {
-					Logf("config cache not written (%v) — mount a volume on /var/lib/jarnis-honeypot", err)
-				}
+				p.saveCache(cfg)
 			}
 			wait = 30 * time.Second
 			if p.Interval != nil {
