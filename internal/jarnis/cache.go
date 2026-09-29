@@ -34,13 +34,20 @@ func SaveConfigCache(path string, cfg *Config) (changed bool, err error) {
 	if err != nil {
 		return false, err
 	}
-	if old, err := os.ReadFile(path); err == nil && bytes.Equal(old, data) {
-		// Unchanged: keep the file, but still enforce 0600.
-		if fi, err := os.Stat(path); err == nil && fi.Mode().Perm() != 0o600 {
-			_ = os.Chmod(path, 0o600)
+	if f, fi, err := openCacheFile(path); err == nil {
+		old, rerr := io.ReadAll(io.LimitReader(f, maxConfigCacheBytes+1))
+		if rerr == nil && bytes.Equal(old, data) {
+			// Unchanged: keep the file, but still enforce 0600.
+			if fi.Mode().Perm() != 0o600 {
+				_ = f.Chmod(0o600)
+			}
+			_ = f.Close()
+			return false, nil
 		}
-		return false, nil
+		_ = f.Close()
 	}
+	// A symlink or other non-regular file at path is replaced by the rename
+	// (rename does not follow symlinks), never written through.
 	if err := writeFileAtomic(path, data, 0o600); err != nil {
 		return false, err
 	}
@@ -50,18 +57,11 @@ func SaveConfigCache(path string, cfg *Config) (changed bool, err error) {
 // LoadConfigCache reads a config written by SaveConfigCache. A cache file
 // readable by group/other is tightened to 0600 (best effort).
 func LoadConfigCache(path string) (*Config, error) {
-	f, err := os.Open(path)
+	f, fi, err := openCacheFile(path)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
-	fi, err := f.Stat()
-	if err != nil {
-		return nil, err
-	}
-	if !fi.Mode().IsRegular() {
-		return nil, fmt.Errorf("config cache %s is not a regular file", path)
-	}
 	if fi.Mode().Perm()&0o077 != 0 {
 		Logf("config cache %s has mode %04o — tightening to 0600", path, fi.Mode().Perm())
 		_ = f.Chmod(0o600)
@@ -84,6 +84,37 @@ func LoadConfigCache(path string) (*Config, error) {
 	}
 	cfg.UpdateIntervalSeconds = cfg.UpdateIntervalSeconds.Clamp()
 	return &cfg, nil
+}
+
+// openCacheFile opens path read-only only if it is a regular file: Lstat
+// refuses symlinks (whose target would otherwise be read and chmodded) and
+// FIFOs/devices (which would block startup); O_NOFOLLOW|O_NONBLOCK and a
+// SameFile check close the race between Lstat and open.
+func openCacheFile(path string) (*os.File, os.FileInfo, error) {
+	li, err := os.Lstat(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	if li.Mode()&os.ModeSymlink != 0 {
+		return nil, nil, fmt.Errorf("config cache %s is a symlink — refusing", path)
+	}
+	if !li.Mode().IsRegular() {
+		return nil, nil, fmt.Errorf("config cache %s is not a regular file (%s) — refusing", path, li.Mode().Type())
+	}
+	f, err := os.OpenFile(path, os.O_RDONLY|openFlagsNoFollow, 0)
+	if err != nil {
+		return nil, nil, err
+	}
+	fi, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return nil, nil, err
+	}
+	if !fi.Mode().IsRegular() || !os.SameFile(li, fi) {
+		_ = f.Close()
+		return nil, nil, fmt.Errorf("config cache %s changed while opening — refusing", path)
+	}
+	return f, fi, nil
 }
 
 // writeFileAtomic writes data to a temp file in the target directory, fsyncs

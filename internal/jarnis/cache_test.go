@@ -115,3 +115,41 @@ func TestConfigCacheHasNoToken(t *testing.T) {
 		t.Fatalf("cache must not contain a token field: %s", b)
 	}
 }
+
+func TestConfigCacheRefusesSymlinkAndLeavesTargetAlone(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "elsewhere")
+	if err := os.WriteFile(target, []byte(`{"ok":true,"name":"x"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.Chmod(target, 0o644)
+	link := filepath.Join(dir, "config.json")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadConfigCache(link); err == nil {
+		t.Fatal("symlinked cache must be refused")
+	}
+	if fi, _ := os.Stat(target); fi.Mode().Perm() != 0o644 {
+		t.Fatalf("symlink target was chmodded to %04o", fi.Mode().Perm())
+	}
+	// Saving replaces the link itself, never writes through it.
+	if _, err := SaveConfigCache(link, sampleConfig("new")); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(target); string(b) != `{"ok":true,"name":"x"}` {
+		t.Fatalf("wrote through the symlink: %s", b)
+	}
+	li, _ := os.Lstat(link)
+	if li.Mode()&os.ModeSymlink != 0 || li.Mode().Perm() != 0o600 {
+		t.Fatalf("cache is %v", li.Mode())
+	}
+}
+
+func TestConfigCacheRefusesDirectory(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	_ = os.Mkdir(path, 0o700)
+	if _, err := LoadConfigCache(path); err == nil {
+		t.Fatal("directory must be refused")
+	}
+}
