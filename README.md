@@ -91,10 +91,23 @@ Needs bind rights for :22 / :23 (root or `cap_net_bind_service`).
 | `SSH_CONTAINER_PORT` | no | `22` |
 | `TELNET_CONTAINER_PORT` | no | `23` |
 | `HTTP_CONTAINER_PORT` | no | `8080` |
+| `SSH_SERVER_VERSION` | no | per-install pick, see [SSH identification string](#ssh-identification-string) |
 
 API URL, honeypot ID and poll interval come from JARNIS — do not set them on the container.
 
 Port changes need a recreate. Banner and design changes apply on the next poll (default 5 minutes).
+
+## SSH identification string
+
+The SSH decoy sends its identification string (`SSH-2.0-…`) immediately after the TCP connect, before it reads anything from the client — like a real sshd, so banner grabbers that wait for the server see it at once.
+
+Which string is sent, first match wins:
+
+1. `SSH_SERVER_VERSION` (env), e.g. `SSH_SERVER_VERSION="SSH-2.0-OpenSSH_9.6p1 Ubuntu-3ubuntu13.5"`
+2. `services.ssh.serverVersion` from the JARNIS config (optional)
+3. Per-install default: one of a small list of stock Ubuntu/Debian OpenSSH strings (Ubuntu 20.04/22.04/24.04, Debian 11/12; `SSH-2.0-OpenSSH_9.6p1 Ubuntu-3ubuntu13.5` is one of them), picked deterministically from the SHA-256 of the SSH host key. The host key is on the state volume, so the string stays the same across restarts and updates of one install and differs between installs — JARNIS sensors do not all share one banner.
+
+The value must be `SSH-2.0-<software>[ <comment>]`, printable ASCII, at most 253 characters, no `-` in `<software>`; anything else is logged and ignored. The chosen string is logged at startup (`ssh listen … ident "…"`). Note: this changes the banner only; the key-exchange algorithm list is still that of Go's SSH library.
 
 ## Ports and firewall
 

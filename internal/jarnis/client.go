@@ -61,6 +61,9 @@ type ServiceSSH struct {
 	HostPort      int    `json:"hostPort"`
 	ContainerPort int    `json:"containerPort"`
 	Banner        string `json:"banner"`
+	// ServerVersion optionally overrides the SSH identification string
+	// ("SSH-2.0-…"). The SSH_SERVER_VERSION env var takes precedence.
+	ServerVersion string `json:"serverVersion,omitempty"`
 }
 
 type ServiceTelnet struct {

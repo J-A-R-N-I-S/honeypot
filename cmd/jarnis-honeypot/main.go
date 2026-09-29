@@ -68,9 +68,20 @@ func main() {
 	live.Services.Telnet.Banner = live.Services.SSH.Banner
 	interval := 300
 
+	// SSH identification string: SSH_SERVER_VERSION > config
+	// services.ssh.serverVersion > per-install default from the host key.
+	sshVersionEnv := strings.TrimSpace(os.Getenv("SSH_SERVER_VERSION"))
+	if sshVersionEnv != "" && !sshserv.ValidVersion(sshVersionEnv) {
+		log.Printf("ignoring invalid SSH_SERVER_VERSION %q (want e.g. %q)", sshVersionEnv, sshserv.DefaultVersion)
+		sshVersionEnv = ""
+	}
+
 	apply := func(cfg *jarnis.Config) {
 		mu.Lock()
 		defer mu.Unlock()
+		if v := cfg.Services.SSH.ServerVersion; v != "" && !sshserv.ValidVersion(v) {
+			log.Printf("ignoring invalid config services.ssh.serverVersion %q", v)
+		}
 		live = *cfg
 		if cfg.UpdateIntervalSeconds >= 30 {
 			interval = cfg.UpdateIntervalSeconds
@@ -88,6 +99,14 @@ func main() {
 		mu.RLock()
 		defer mu.RUnlock()
 		return live.Services.Telnet.Banner
+	}
+	sshVersion := func() string {
+		if sshVersionEnv != "" {
+			return sshVersionEnv
+		}
+		mu.RLock()
+		defer mu.RUnlock()
+		return live.Services.SSH.ServerVersion
 	}
 	designs := func() []jarnis.Design {
 		mu.RLock()
@@ -148,7 +167,7 @@ func main() {
 	}()
 
 	go func() {
-		s := &sshserv.Server{Addr: ":" + strconv.Itoa(sshPort), KeyPath: "/var/lib/jarnis-honeypot/ssh_host_ecdsa", Banner: bannerSSH, Report: report}
+		s := &sshserv.Server{Addr: ":" + strconv.Itoa(sshPort), KeyPath: "/var/lib/jarnis-honeypot/ssh_host_ecdsa", Banner: bannerSSH, Version: sshVersion, Report: report}
 		if err := s.ListenAndServe(); err != nil {
 			log.Fatalf("ssh listen %s: %v", s.Addr, err)
 		}

@@ -27,15 +27,25 @@ import (
 )
 
 type Server struct {
-	Addr     string
-	KeyPath  string
-	Banner   func() string
-	Report   func(queue.Event)
-	mu       sync.Mutex
-	listener net.Listener
+	Addr    string
+	KeyPath string
+	Banner  func() string
+	// Version returns the SSH identification string override (for example
+	// from SSH_SERVER_VERSION). "" or an invalid value means the per-install
+	// default picked from the host key (VersionForHostKey).
+	Version func() string
+	Report  func(queue.Event)
+
+	mu             sync.Mutex
+	listener       net.Listener
+	signer         ssh.Signer
+	defaultVersion string
 }
 
-func (s *Server) ListenAndServe() error {
+// Listen loads (or creates) the host key and opens the TCP listener. It does
+// not accept connections yet; call Serve for that. Splitting the two lets the
+// caller open every port before doing slow work such as the config fetch.
+func (s *Server) Listen() error {
 	signer, err := loadOrCreateHostKey(s.KeyPath)
 	if err != nil {
 		return err
@@ -46,9 +56,21 @@ func (s *Server) ListenAndServe() error {
 	}
 	s.mu.Lock()
 	s.listener = ln
+	s.signer = signer
+	s.defaultVersion = VersionForHostKey(signer.PublicKey())
 	s.mu.Unlock()
-	log.Printf("ssh listen %s (auth always denied)", s.Addr)
+	log.Printf("ssh listen %s (auth always denied, ident %q)", ln.Addr(), s.serverVersion())
+	return nil
+}
 
+// Serve accepts connections on the listener opened by Listen.
+func (s *Server) Serve() error {
+	s.mu.Lock()
+	ln, signer := s.listener, s.signer
+	s.mu.Unlock()
+	if ln == nil || signer == nil {
+		return errors.New("sshserv: Serve called before Listen")
+	}
 	sem := make(chan struct{}, 64)
 	for {
 		c, err := ln.Accept()
@@ -67,6 +89,40 @@ func (s *Server) ListenAndServe() error {
 	}
 }
 
+func (s *Server) ListenAndServe() error {
+	if err := s.Listen(); err != nil {
+		return err
+	}
+	return s.Serve()
+}
+
+// ListenAddr is the bound address after Listen (useful with port 0).
+func (s *Server) ListenAddr() net.Addr {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.listener == nil {
+		return nil
+	}
+	return s.listener.Addr()
+}
+
+// serverVersion is the identification string for the next connection:
+// a valid override, else the per-install default, else DefaultVersion.
+func (s *Server) serverVersion() string {
+	if s.Version != nil {
+		if v := s.Version(); v != "" && ValidVersion(v) {
+			return v
+		}
+	}
+	s.mu.Lock()
+	d := s.defaultVersion
+	s.mu.Unlock()
+	if d != "" {
+		return d
+	}
+	return DefaultVersion
+}
+
 func (s *Server) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -81,9 +137,20 @@ func (s *Server) handle(nc net.Conn, signer ssh.Signer) {
 	_ = nc.SetDeadline(time.Now().Add(45 * time.Second))
 	src, sport := netaddr.Split(nc.RemoteAddr().String())
 
+	// Send our identification string first, before reading anything: real
+	// sshd does, and banner grabbers / scanners wait for it (RFC 4253 4.2
+	// allows either side to send first). x/crypto/ssh would only send it
+	// after we have peeked the client's line, which stalls clients that wait
+	// for the server. identSentConn drops the library's duplicate.
+	version := s.serverVersion()
+	line := []byte(version + "\r\n")
+	if _, err := nc.Write(line); err != nil {
+		return
+	}
+
 	br := bufio.NewReader(nc)
 	ident := peekSSHIdent(br)
-	nc = &readerConn{Conn: nc, r: br}
+	nc = &readerConn{Conn: &identSentConn{Conn: nc, sent: line}, r: br}
 
 	sawPassword := false
 	defer func() {
@@ -133,7 +200,7 @@ func (s *Server) handle(nc net.Conn, signer ssh.Signer) {
 		},
 		PublicKeyCallback: rejectKey,
 		AuthLogCallback:   nil,
-		ServerVersion:     "SSH-2.0-OpenSSH_9.6",
+		ServerVersion:     version,
 		BannerCallback: func(conn ssh.ConnMetadata) string {
 			if s.Banner != nil {
 				b := s.Banner()
