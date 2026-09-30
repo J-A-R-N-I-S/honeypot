@@ -179,7 +179,7 @@ Do **not** mount `docker.sock` into the honeypot. Do **not** run Watchtower in o
 - **Not carried over**: additional networks, network aliases/static IPs, user, entrypoint/command, workdir, sysctls, ulimits, devices, other tmpfs mounts. Containers whose mount paths or options contain whitespace (or `,`/`:` in paths) are skipped and left running unchanged.
 - A container without a mount on `/var/lib/jarnis-honeypot` gets a state volume (see [Multiple instances](#multiple-instances-on-one-host) for the name); a key found in an old writable container layer is copied over.
 - **Safe replace**: one run at a time (`flock` on `/run/jarnis-honeypot-update.lock`; symlinks refused). The old container is removed only after the new one has run for `HEALTH_WAIT` seconds (default 8, minimum 3) with no restart. On any failure, or SIGHUP/SIGINT/SIGTERM, the original container (tracked by ID) is restarted by ID and renamed back where possible; a container that a failed `docker create` left under the name (recognised by that attempt's unique `com.jarnis.update-run` label) is removed first. The log and exit code say whether the restore fully succeeded. A leftover `<name>.jarnis-prev.<pid>` container (e.g. after a hard kill) is reported and never touched.
-- **Exit status**: `1` if any recreate failed or a honeypot container with the current image is not running (systemd shows the unit as failed), `0` otherwise. **A sensor you stopped on purpose therefore makes the daily run fail** until you start or remove it — or set `ALLOW_STOPPED=1` in `/etc/jarnis-honeypot-update.conf`, which turns this into a warning. The updater never starts a stopped sensor itself. Containers skipped by policy (no published ports, no token, unsupported mount path/option) are logged and do not fail the run.
+- **Exit status**: `1` if any recreate failed or a honeypot container with the current image is not running (systemd shows the unit as failed), `0` otherwise. **A sensor you stopped on purpose therefore makes the daily run fail** until you start or remove it — or set `ALLOW_STOPPED=1` in `/etc/jarnis-honeypot-update.conf`, which turns this into a warning. The updater never starts a stopped sensor itself: when a new image is out, a stopped sensor is recreated onto it but left stopped (created, not started, no health gate); that run counts it as updated, and later runs apply the `ALLOW_STOPPED` rule above. Containers skipped by policy (no published ports, no token, unsupported mount path/option) are logged and do not fail the run.
 - **Compose**: `com.docker.compose.*` labels are not carried over, so after an update a compose-managed sensor is a plain container. For compose installs prefer `docker compose pull && docker compose up -d`; if the host updater already replaced the container, `docker rm -f` it before the next `docker compose up -d` (the state volume is kept).
 
 Daily including weekends (sensors do not sleep). systemd timer at 04:20 host time; cron fallback if there is no systemd.
@@ -194,7 +194,7 @@ for f in jarnis-honeypot-update.sh jarnis-honeypot-update.service jarnis-honeypo
   curl -fsSL "https://jarnis.io/guides/$f" -o "$f"
 done
 cat > SHA256SUMS <<'EOF'
-399768aeecec48a2c4723d91dd48cab670883ecf2aff13e124606dfbf0a3851c  jarnis-honeypot-update.sh
+8017615f640b85447ee1e83e4eaedbc191633e504c16cb86c738b2b1f01a5bcd  jarnis-honeypot-update.sh
 d3d16961a46f16b432bd5f58e29a3f1bc50225e0a2ebb166a7c0bde73da56baa  jarnis-honeypot-update.service
 04453fcb41355927022705b881f0ad145750f10cd3d8b4fb28103d8166e4e03c  jarnis-honeypot-update.timer
 EOF

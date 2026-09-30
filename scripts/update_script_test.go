@@ -194,3 +194,49 @@ func TestRollbackRestoresNameAndStartsOnCleanFailure(t *testing.T) {
 		t.Fatalf("missing restore log\n%s", out)
 	}
 }
+
+// P19: a stopped sensor on an old image is recreated onto the new image but
+// left stopped (never started, no health gate); the old container is removed
+// and the run passes. The next run applies the ALLOW_STOPPED check.
+func TestStoppedOutdatedContainerIsRecreatedButLeftStopped(t *testing.T) {
+	h := newStubHost(t)
+	h.addContainer("old1", "jarnis-honeypot", "sha256:old", false)
+	code, out := h.run()
+	if code != 0 || !strings.Contains(out, "recreated jarnis-honeypot (sha256:new) — left stopped, as it was") {
+		t.Fatalf("code=%d\n%s", code, out)
+	}
+	ents, _ := os.ReadDir(filepath.Join(h.state, "c"))
+	if len(ents) != 1 || ents[0].Name() == "old1" {
+		t.Fatalf("containers: %v", ents)
+	}
+	id := ents[0].Name()
+	if h.field(id, "name") != "jarnis-honeypot" || h.field(id, "image") != "sha256:new" || h.field(id, "running") != "false" {
+		t.Fatalf("new container: name=%s image=%s running=%s", h.field(id, "name"), h.field(id, "image"), h.field(id, "running"))
+	}
+	calls, _ := os.ReadFile(filepath.Join(h.state, "calls.log"))
+	if strings.Contains("\n"+string(calls), "\nstart ") {
+		t.Fatalf("updater must not start a stopped sensor; calls:\n%s", calls)
+	}
+	code, out = h.run()
+	if code == 0 || !strings.Contains(out, "NOT running") {
+		t.Fatalf("second run without ALLOW_STOPPED: code=%d\n%s", code, out)
+	}
+	code, out = h.run("ALLOW_STOPPED=1")
+	if code != 0 || !strings.Contains(out, "ALLOW_STOPPED=1") {
+		t.Fatalf("second run with ALLOW_STOPPED=1: code=%d\n%s", code, out)
+	}
+}
+
+// P19: rollback of a stopped sensor gives it its name back and leaves it
+// stopped.
+func TestRollbackLeavesStoppedContainerStopped(t *testing.T) {
+	h := newStubHost(t)
+	h.addContainer("old1", "jarnis-honeypot", "sha256:old", false)
+	code, out := h.run("STUB_CREATE_FAIL=1")
+	if code == 0 || !strings.Contains(out, "previous container jarnis-honeypot restored") {
+		t.Fatalf("code=%d\n%s", code, out)
+	}
+	if h.field("old1", "name") != "jarnis-honeypot" || h.field("old1", "running") != "false" {
+		t.Fatalf("old sensor: name=%s running=%s\n%s", h.field("old1", "name"), h.field("old1", "running"), out)
+	}
+}

@@ -27,7 +27,8 @@
 #
 # Safety: one run at a time (flock on $LOCK_FILE). The old container is only
 # removed after the new one has been running for $HEALTH_WAIT seconds (min 3)
-# without a restart; otherwise, on any error, or on SIGHUP/SIGINT/SIGTERM, the
+# without a restart; a sensor that was stopped is recreated but not started
+# (no health gate). Otherwise, on any error, or on SIGHUP/SIGINT/SIGTERM, the
 # old container (tracked by ID, never by name) is restarted by ID (if it was
 # running) and renamed back where possible; the log and exit code say whether
 # the restore fully succeeded.
@@ -437,6 +438,21 @@ recreate() {
         rm -f "$keytar"
     fi
 
+    if [ "$RB_WAS_RUNNING" != 1 ]; then
+        # The original was stopped: never start a stopped sensor. Keep the
+        # new container created but stopped (no health gate — nothing runs)
+        # and commit. The next run sees it with the current image and
+        # applies the ALLOW_STOPPED check.
+        RB_NAME=""
+        RB_OLD=""
+        RB_NEW=""
+        RB_TOKEN=""
+        if ! docker rm "$cid" >/dev/null; then
+            log "WARNING: new $cname is created (stopped), but the previous container $cid could not be removed"
+        fi
+        log "recreated $cname ($new_id) — left stopped, as it was"
+        return 0
+    fi
     if ! docker start "$new_cid" >/dev/null; then
         log "recreate failed $cname — new container did not start"
         restore_previous
