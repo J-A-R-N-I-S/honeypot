@@ -26,7 +26,7 @@ Live sensor uses ~6 MB RAM. A 64 MB limit leaves room for other services without
 
 **Before you run it:** move the host's own sshd off port 22 (for example to 2222) and confirm a login on the new port — the decoy takes 22. Published ports bind on all interfaces (`0.0.0.0` / `[::]`) on purpose: the honeypot must be reachable from the internet. Docker-published ports **bypass ufw** (Docker writes its own iptables rules), so `ufw deny 22` does not hide the decoy — and do not publish anything else from this host you would not expose. See [Ports and firewall](#ports-and-firewall).
 
-The named volume `jarnis-honeypot-state` holds the SSH host key (`/var/lib/jarnis-honeypot/ssh_host_ecdsa`). Without it the key is regenerated on every recreate (the root filesystem is read-only), and a changing fingerprint is an easy honeypot tell. Keep the volume when you recreate or update the container.
+The named volume `jarnis-honeypot-state` holds the SSH host key (`/var/lib/jarnis-honeypot/ssh_host_ecdsa`) and the last good config (`config.json`, see [Startup and offline behaviour](#startup-and-offline-behaviour)). Without it the key is regenerated on every recreate (the root filesystem is read-only), and a changing fingerprint is an easy honeypot tell. Keep the volume when you recreate or update the container.
 
 3. Check: `ssh user@HOST` fails, `curl http://HOST:8080/` shows the login page, the attempt appears on the dashboard.
 4. Install the host auto-update timer (the container cannot pull Hub). See [Auto-update](#auto-update-docker-hub) or https://jarnis.io/guides/honeypot-auto-update.html
@@ -91,10 +91,35 @@ Needs bind rights for :22 / :23 (root or `cap_net_bind_service`).
 | `SSH_CONTAINER_PORT` | no | `22` |
 | `TELNET_CONTAINER_PORT` | no | `23` |
 | `HTTP_CONTAINER_PORT` | no | `8080` |
+| `SSH_SERVER_VERSION` | no | per-install pick, see [SSH identification string](#ssh-identification-string) |
+| `CONFIG_CACHE_PATH` | no | `/var/lib/jarnis-honeypot/config.json` (`off` disables the cache) |
+| `JARNIS_API_FALLBACK_IP` | no | `116.204.196.220` (`off` disables), see [Startup and offline behaviour](#startup-and-offline-behaviour) |
 
 API URL, honeypot ID and poll interval come from JARNIS — do not set them on the container.
 
 Port changes need a recreate. Banner and design changes apply on the next poll (default 5 minutes).
+
+## Startup and offline behaviour
+
+1. The last good config is loaded from the cache (`/var/lib/jarnis-honeypot/config.json`), if present.
+2. All listeners (SSH, Telnet, HTTP) are opened **before** the sensor talks to the JARNIS API, so the ports are up even when the API is slow or unreachable.
+3. The config is fetched. On failure the sensor keeps running on the cached config (or the built-in defaults on first start) and retries after 5 s, 10 s, 30 s, 60 s, then every 60 s. If JARNIS rejects the token (HTTP 401/403) that is not transient: the log says so (check `HONEYPOT_TOKEN`) and the sensor retries only every ~15 minutes. Once a fetch works it polls at the interval set in JARNIS (default 5 minutes, allowed 30 s – 24 h). Only a response with `ok: true` and a honeypot ID is used. Every wait is randomised by ±20 % so sensors do not reconnect in lockstep.
+
+**Config cache.** Every successful fetch whose content changed is written to the cache atomically (temp file + rename, fsync) with mode `0600` in a `0700` directory; a looser mode found at startup is tightened to `0600`. The cache contains only the sensor config from JARNIS: name, status, poll interval, per-service ports, banners, SSH identification override and HTTP designs (HTML/CSS). It does **not** contain the honeypot ID (the sensor identity always comes from a live fetch, so a state volume reused with a new token cannot pin an old ID), `HONEYPOT_TOKEN` or captured credentials. It lives on the state volume next to the SSH host key; without the volume the sensor still runs but cannot cache (logged once, and again only after the cache became writable and failed anew).
+
+**API address.** The API is reached as `https://jarnis.io/api` by normal DNS. Only if resolving or connecting by name fails is the fallback IP `116.204.196.220` dialed (for networks whose firewall blocks public DNS). TLS is still verified against `jarnis.io`, so the fallback cannot redirect traffic to anyone else — a stale IP only makes the fallback fail. Set `JARNIS_API_FALLBACK_IP` to another IP, or to `off` to disable the fallback.
+
+## SSH identification string
+
+The SSH decoy sends its identification string (`SSH-2.0-…`) immediately after the TCP connect, before it reads anything from the client — like a real sshd, so banner grabbers that wait for the server see it at once.
+
+Which string is sent, first match wins:
+
+1. `SSH_SERVER_VERSION` (env), e.g. `SSH_SERVER_VERSION="SSH-2.0-OpenSSH_9.6p1 Ubuntu-3ubuntu13.5"`
+2. `services.ssh.serverVersion` from the JARNIS config (optional)
+3. Per-install default: one of a small list of stock OpenSSH strings of supported Ubuntu (22.04, 24.04, 26.04) and Debian (12, 13) releases, e.g. `SSH-2.0-OpenSSH_9.6p1 Ubuntu-3ubuntu13.19`. The choice is an HMAC-SHA256 keyed with the **private** SSH host key, so it cannot be recomputed from anything a scanner sees (the public key and this repository are public). The key is on the state volume, so the string stays the same across restarts and updates of one install and differs between installs — JARNIS sensors do not all share one banner.
+
+The value must be `SSH-2.0-<software>[ <comment>]`, printable ASCII, at most 253 characters, no `-` in `<software>`; anything else is logged and ignored. The chosen string is logged at startup (`ssh listen … ident "…"`). Note: this changes the banner only; the key-exchange algorithm list is still that of Go's SSH library.
 
 ## Ports and firewall
 
@@ -104,7 +129,7 @@ Port changes need a recreate. Banner and design changes apply on the next poll (
 
 ## Container hardening
 
-The recommended flags: `--read-only`, `--cap-drop ALL`, `--security-opt no-new-privileges:true`, `--pids-limit 64`, `--cpus 0.25`, `--memory 64m`, `--tmpfs /tmp:size=8m,mode=1777`, plus the state volume on `/var/lib/jarnis-honeypot`. The sensor binds 22/23 inside the container without `CAP_NET_BIND_SERVICE` only because Docker sets `net.ipv4.ip_unprivileged_port_start=0` in the container's network namespace (default for bridge networks since Docker 20.10). With `--network host`, or a runtime that does not set this sysctl, binding 22/23 fails under `--cap-drop ALL`. `docker-compose.yml` uses the same settings; the host updater enforces them on every recreate.
+The recommended flags: `--read-only`, `--cap-drop ALL`, `--security-opt no-new-privileges:true`, `--pids-limit 64`, `--cpus 0.25`, `--memory 64m`, `--tmpfs /tmp:size=8m,mode=1777`, plus the state volume on `/var/lib/jarnis-honeypot`. The sensor runs as root inside the container, but with no capabilities at all (no `CAP_DAC_OVERRIDE`, `CAP_CHOWN`, `CAP_FOWNER`), so it can only write the state directory because it owns it: the image creates `/var/lib/jarnis-honeypot` as `root:root 0700` and Docker copies that owner and mode into a new named volume. If you use a bind mount instead, make the host directory `root:root` with mode `0700` (`install -d -o root -g root -m 700 /srv/jarnis-honeypot`); a directory owned by another user makes the host key ephemeral and disables the config cache (both logged). The sensor binds 22/23 inside the container without `CAP_NET_BIND_SERVICE` only because Docker sets `net.ipv4.ip_unprivileged_port_start=0` in the container's network namespace (default for bridge networks since Docker 20.10). With `--network host`, or a runtime that does not set this sysctl, binding 22/23 fails under `--cap-drop ALL`. `docker-compose.yml` uses the same settings; the host updater enforces them on every recreate.
 
 ## Multiple instances on one host
 
@@ -153,8 +178,8 @@ Do **not** mount `docker.sock` into the honeypot. Do **not** run Watchtower in o
 - **Always reset to the hardened defaults**: `--restart unless-stopped`, `--memory 64m`, `--cpus 0.25`, `--pids-limit 64`, `--read-only`, `--cap-drop ALL`, `no-new-privileges`, `--tmpfs /tmp:size=8m,mode=1777`.
 - **Not carried over**: additional networks, network aliases/static IPs, user, entrypoint/command, workdir, sysctls, ulimits, devices, other tmpfs mounts. Containers whose mount paths or options contain whitespace (or `,`/`:` in paths) are skipped and left running unchanged.
 - A container without a mount on `/var/lib/jarnis-honeypot` gets a state volume (see [Multiple instances](#multiple-instances-on-one-host) for the name); a key found in an old writable container layer is copied over.
-- **Safe replace**: one run at a time (`flock` on `/run/jarnis-honeypot-update.lock`; symlinks refused). The old container is removed only after the new one has run for `HEALTH_WAIT` seconds (default 8, minimum 3) with no restart. On any failure, or SIGHUP/SIGINT/SIGTERM, the original container (tracked by ID) is renamed back and restarted; the log says whether that restore actually succeeded. A leftover `<name>.jarnis-prev.<pid>` container (e.g. after a hard kill) is reported and never touched.
-- **Exit status**: `1` if any recreate failed (systemd shows the unit as failed), `0` otherwise. Containers skipped by policy (no published ports, no token, unsupported mount path/option) are logged and do not fail the run.
+- **Safe replace**: one run at a time (`flock` on `/run/jarnis-honeypot-update.lock`; symlinks refused). The old container is removed only after the new one has run for `HEALTH_WAIT` seconds (default 8, minimum 3) with no restart. On any failure, or SIGHUP/SIGINT/SIGTERM, the original container (tracked by ID) is restarted by ID and renamed back where possible; a container that a failed `docker create` left under the name (recognised by that attempt's unique `com.jarnis.update-run` label) is removed first. The log and exit code say whether the restore fully succeeded. A leftover `<name>.jarnis-prev.<pid>` container (e.g. after a hard kill) is reported and never touched.
+- **Exit status**: `1` if any recreate failed or a honeypot container with the current image is not running (systemd shows the unit as failed), `0` otherwise. **A sensor you stopped on purpose therefore makes the daily run fail** until you start or remove it — or set `ALLOW_STOPPED=1` in `/etc/jarnis-honeypot-update.conf`, which turns this into a warning. The updater never starts a stopped sensor itself. Containers skipped by policy (no published ports, no token, unsupported mount path/option) are logged and do not fail the run.
 - **Compose**: `com.docker.compose.*` labels are not carried over, so after an update a compose-managed sensor is a plain container. For compose installs prefer `docker compose pull && docker compose up -d`; if the host updater already replaced the container, `docker rm -f` it before the next `docker compose up -d` (the state volume is kept).
 
 Daily including weekends (sensors do not sleep). systemd timer at 04:20 host time; cron fallback if there is no systemd.
@@ -169,7 +194,7 @@ for f in jarnis-honeypot-update.sh jarnis-honeypot-update.service jarnis-honeypo
   curl -fsSL "https://jarnis.io/guides/$f" -o "$f"
 done
 cat > SHA256SUMS <<'EOF'
-264a6bd233b783e557475df1f9cfb9fa800a561d9d7f5f6584e55b896b1a20c9  jarnis-honeypot-update.sh
+399768aeecec48a2c4723d91dd48cab670883ecf2aff13e124606dfbf0a3851c  jarnis-honeypot-update.sh
 d3d16961a46f16b432bd5f58e29a3f1bc50225e0a2ebb166a7c0bde73da56baa  jarnis-honeypot-update.service
 04453fcb41355927022705b881f0ad145750f10cd3d8b4fb28103d8166e4e03c  jarnis-honeypot-update.timer
 EOF
@@ -196,7 +221,7 @@ echo '20 4 * * * root /usr/local/sbin/jarnis-honeypot-update' > /etc/cron.d/jarn
 
 Disable: `systemctl disable --now jarnis-honeypot-update.timer` (and `rm -f /etc/cron.d/jarnis-honeypot-update` if you used cron).
 
-Optional `/etc/jarnis-honeypot-update.conf`: `NAME` (pin one container; default is every matching honeypot on the host), `IMAGE` (default `jarnis/honeypot:latest`), `ENV_FILE` (used only when `NAME` is set; default `/root/jarnis-honeypot.env`), `HEALTH_WAIT` (seconds the new container must stay up before the old one is removed; default `8`, minimum `3`), `LOCK_FILE` (default `/run/jarnis-honeypot-update.lock`). Without `NAME`, each container keeps its own env from inspect. The script never prints the env file or token.
+Optional `/etc/jarnis-honeypot-update.conf`: `NAME` (pin one container; default is every matching honeypot on the host), `IMAGE` (default `jarnis/honeypot:latest`), `ENV_FILE` (used only when `NAME` is set; default `/root/jarnis-honeypot.env`), `HEALTH_WAIT` (seconds the new container must stay up before the old one is removed; default `8`, minimum `3`), `ALLOW_STOPPED` (default `0`; `1` = a stopped sensor with the current image is only a warning), `LOCK_FILE` (default `/run/jarnis-honeypot-update.lock`; a non-root member of the `docker` group running the script by hand cannot create that file and needs e.g. `LOCK_FILE=$XDG_RUNTIME_DIR/jarnis-honeypot-update.lock`). Without `NAME`, each container keeps its own env from inspect. The script never prints the env file or token.
 
 ### CI secrets (Hub publish)
 

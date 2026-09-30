@@ -2,11 +2,14 @@ package httpserv
 
 import (
 	"crypto/sha1"
+	"errors"
 	"html"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -21,12 +24,21 @@ type Server struct {
 	Mode    func() string
 	Report  func(queue.Event)
 	rr      atomic.Uint64
+	mu      sync.Mutex
 	server  *http.Server
+	ln      net.Listener
 }
 
-func (s *Server) ListenAndServe() error {
+// Listen opens the TCP listener without serving yet (see Serve).
+func (s *Server) Listen() error {
+	ln, err := net.Listen("tcp", s.Addr)
+	if err != nil {
+		return err
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handle)
+	s.mu.Lock()
+	s.ln = ln
 	s.server = &http.Server{
 		Addr:              s.Addr,
 		Handler:           mux,
@@ -36,19 +48,67 @@ func (s *Server) ListenAndServe() error {
 		IdleTimeout:       30 * time.Second,
 		MaxHeaderBytes:    16 << 10,
 	}
-	log.Printf("http listen %s (no real sessions)", s.Addr)
-	return s.server.ListenAndServe()
+	s.mu.Unlock()
+	log.Printf("http listen %s (no real sessions)", ln.Addr())
+	return nil
+}
+
+// Serve serves HTTP on the listener opened by Listen.
+func (s *Server) Serve() error {
+	s.mu.Lock()
+	srv, ln := s.server, s.ln
+	s.mu.Unlock()
+	if srv == nil || ln == nil {
+		return errors.New("httpserv: Serve called before Listen")
+	}
+	return srv.Serve(ln)
+}
+
+func (s *Server) ListenAndServe() error {
+	if err := s.Listen(); err != nil {
+		return err
+	}
+	return s.Serve()
+}
+
+// ListenAddr is the bound address after Listen.
+func (s *Server) ListenAddr() net.Addr {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.ln == nil {
+		return nil
+	}
+	return s.ln.Addr()
 }
 
 func (s *Server) Close() error {
-	if s.server != nil {
-		return s.server.Close()
+	s.mu.Lock()
+	srv, ln := s.server, s.ln
+	s.mu.Unlock()
+	if srv != nil {
+		err := srv.Close()
+		if ln != nil {
+			_ = ln.Close()
+		}
+		return err
 	}
 	return nil
 }
 
 func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	src, sport := netaddr.Split(r.RemoteAddr)
+	// net/http would recover too, but log it our way and close the
+	// connection instead of printing a stack trace per hostile request.
+	defer func() {
+		if rec := recover(); rec != nil {
+			if rec == http.ErrAbortHandler {
+				panic(rec)
+			}
+			log.Printf("http: recovered panic in request from %s: %v", src, rec)
+			w.Header().Set("Connection", "close")
+			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		}
+	}()
 	allowed := r.Method == http.MethodGet || r.Method == http.MethodPost || r.Method == http.MethodHead
 
 	user, pass := "", ""
@@ -70,7 +130,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 				Summary:    "HTTP login_attempt user=" + user,
 				Raw:        raw,
 			})
-			jarnis.Logf("http capture %s user=%s path=%s (denied)", src, user, r.URL.Path)
+			jarnis.Logf("http capture %s user=%q path=%q (denied)", src, user, r.URL.Path)
 		} else {
 			s.Report(queue.Event{
 				Service:    "http",

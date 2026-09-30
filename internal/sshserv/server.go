@@ -27,16 +27,26 @@ import (
 )
 
 type Server struct {
-	Addr     string
-	KeyPath  string
-	Banner   func() string
-	Report   func(queue.Event)
-	mu       sync.Mutex
-	listener net.Listener
+	Addr    string
+	KeyPath string
+	Banner  func() string
+	// Version returns the SSH identification string override (for example
+	// from SSH_SERVER_VERSION). "" or an invalid value means the per-install
+	// default picked from the host key (VersionForHostKey).
+	Version func() string
+	Report  func(queue.Event)
+
+	mu             sync.Mutex
+	listener       net.Listener
+	signer         ssh.Signer
+	defaultVersion string
 }
 
-func (s *Server) ListenAndServe() error {
-	signer, err := loadOrCreateHostKey(s.KeyPath)
+// Listen loads (or creates) the host key and opens the TCP listener. It does
+// not accept connections yet; call Serve for that. Splitting the two lets the
+// caller open every port before doing slow work such as the config fetch.
+func (s *Server) Listen() error {
+	signer, secret, err := loadOrCreateHostKeySecret(s.KeyPath)
 	if err != nil {
 		return err
 	}
@@ -46,9 +56,21 @@ func (s *Server) ListenAndServe() error {
 	}
 	s.mu.Lock()
 	s.listener = ln
+	s.signer = signer
+	s.defaultVersion = VersionForSecret(secret)
 	s.mu.Unlock()
-	log.Printf("ssh listen %s (auth always denied)", s.Addr)
+	log.Printf("ssh listen %s (auth always denied, ident %q)", ln.Addr(), s.serverVersion())
+	return nil
+}
 
+// Serve accepts connections on the listener opened by Listen.
+func (s *Server) Serve() error {
+	s.mu.Lock()
+	ln, signer := s.listener, s.signer
+	s.mu.Unlock()
+	if ln == nil || signer == nil {
+		return errors.New("sshserv: Serve called before Listen")
+	}
 	sem := make(chan struct{}, 64)
 	for {
 		c, err := ln.Accept()
@@ -67,6 +89,40 @@ func (s *Server) ListenAndServe() error {
 	}
 }
 
+func (s *Server) ListenAndServe() error {
+	if err := s.Listen(); err != nil {
+		return err
+	}
+	return s.Serve()
+}
+
+// ListenAddr is the bound address after Listen (useful with port 0).
+func (s *Server) ListenAddr() net.Addr {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.listener == nil {
+		return nil
+	}
+	return s.listener.Addr()
+}
+
+// serverVersion is the identification string for the next connection:
+// a valid override, else the per-install default, else DefaultVersion.
+func (s *Server) serverVersion() string {
+	if s.Version != nil {
+		if v := s.Version(); v != "" && ValidVersion(v) {
+			return v
+		}
+	}
+	s.mu.Lock()
+	d := s.defaultVersion
+	s.mu.Unlock()
+	if d != "" {
+		return d
+	}
+	return DefaultVersion
+}
+
 func (s *Server) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -80,10 +136,28 @@ func (s *Server) handle(nc net.Conn, signer ssh.Signer) {
 	defer nc.Close()
 	_ = nc.SetDeadline(time.Now().Add(45 * time.Second))
 	src, sport := netaddr.Split(nc.RemoteAddr().String())
+	// A panic in one connection (e.g. a bug in the SSH library triggered by
+	// a hostile client) must not take down the sensor: log and close.
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("ssh: recovered panic in connection from %s: %v", src, r)
+		}
+	}()
+
+	// Send our identification string first, before reading anything: real
+	// sshd does, and banner grabbers / scanners wait for it (RFC 4253 4.2
+	// allows either side to send first). x/crypto/ssh would only send it
+	// after we have peeked the client's line, which stalls clients that wait
+	// for the server. identSentConn drops the library's duplicate.
+	version := s.serverVersion()
+	line := []byte(version + "\r\n")
+	if _, err := nc.Write(line); err != nil {
+		return
+	}
 
 	br := bufio.NewReader(nc)
 	ident := peekSSHIdent(br)
-	nc = &readerConn{Conn: nc, r: br}
+	nc = &readerConn{Conn: &identSentConn{Conn: nc, sent: line}, r: br}
 
 	sawPassword := false
 	defer func() {
@@ -128,12 +202,12 @@ func (s *Server) handle(nc net.Conn, signer ssh.Signer) {
 					},
 				})
 			}
-			jarnis.Logf("ssh capture %s user=%s (denied)", src, user)
+			jarnis.Logf("ssh capture %s user=%q (denied)", src, user)
 			return nil, fmt.Errorf("permission denied")
 		},
 		PublicKeyCallback: rejectKey,
 		AuthLogCallback:   nil,
-		ServerVersion:     "SSH-2.0-OpenSSH_9.6",
+		ServerVersion:     version,
 		BannerCallback: func(conn ssh.ConnMetadata) string {
 			if s.Banner != nil {
 				b := s.Banner()
@@ -156,7 +230,7 @@ func (s *Server) handle(nc net.Conn, signer ssh.Signer) {
 		ident = v
 	}
 	// If we ever got here, a future bug granted auth. Tear down immediately.
-	log.Printf("ssh unexpected authenticated conn from %s user=%s — closing", src, conn.User())
+	log.Printf("ssh unexpected authenticated conn from %s user=%q — closing", src, conn.User())
 	_ = conn.Close()
 	go ssh.DiscardRequests(reqs)
 	for ch := range chans {
@@ -201,6 +275,13 @@ func rejectKey(conn ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, erro
 // (path + ".bad-<unix time>") and replaced, and a key that cannot be written
 // is used in memory only. A returned error means key generation itself failed.
 func loadOrCreateHostKey(path string) (ssh.Signer, error) {
+	signer, _, err := loadOrCreateHostKeySecret(path)
+	return signer, err
+}
+
+// loadOrCreateHostKeySecret is loadOrCreateHostKey that also returns the
+// private key PEM (secret material for VersionForSecret).
+func loadOrCreateHostKeySecret(path string) (ssh.Signer, []byte, error) {
 	if path == "" {
 		path = "/var/lib/jarnis-honeypot/ssh_host_ecdsa"
 	}
@@ -209,7 +290,7 @@ func loadOrCreateHostKey(path string) (ssh.Signer, error) {
 	case err == nil:
 		signer, perr := ssh.ParsePrivateKey(b)
 		if perr == nil {
-			return signer, nil
+			return signer, b, nil
 		}
 		log.Printf("ssh host key %s is corrupt (%v) — keeping a backup and generating a new key", path, perr)
 		backupHostKey(path)
@@ -222,11 +303,11 @@ func loadOrCreateHostKey(path string) (ssh.Signer, error) {
 
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	der, err := x509.MarshalECPrivateKey(key)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	pemBytes := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: der})
 	// Persist when possible; otherwise ephemeral key (read-only root without
@@ -237,7 +318,11 @@ func loadOrCreateHostKey(path string) (ssh.Signer, error) {
 	} else {
 		log.Printf("ssh host key created at %s", path)
 	}
-	return ssh.ParsePrivateKey(pemBytes)
+	signer, err := ssh.ParsePrivateKey(pemBytes)
+	if err != nil {
+		return nil, nil, err
+	}
+	return signer, pemBytes, nil
 }
 
 // backupHostKey moves an unusable key out of the way so it is not lost and

@@ -15,33 +15,25 @@ import (
 
 func startSSH(t *testing.T, report func(queue.Event)) *Server {
 	t.Helper()
-	dir := t.TempDir()
-	s := &Server{
-		Addr:    "127.0.0.1:0",
-		KeyPath: filepath.Join(dir, "hostkey"),
-		Banner:  func() string { return "monitored\n" },
-		Report:  report,
+	return startSSHWith(t, &Server{Report: report})
+}
+
+// startSSHWith opens s on a random loopback port via Listen + Serve.
+func startSSHWith(t *testing.T, s *Server) *Server {
+	t.Helper()
+	s.Addr = "127.0.0.1:0"
+	if s.KeyPath == "" {
+		s.KeyPath = filepath.Join(t.TempDir(), "hostkey")
 	}
-	ln, err := net.Listen("tcp", s.Addr)
-	if err != nil {
+	if s.Banner == nil {
+		s.Banner = func() string { return "monitored\n" }
+	}
+	if err := s.Listen(); err != nil {
 		t.Fatal(err)
 	}
-	s.listener = ln
-	s.Addr = ln.Addr().String()
-	signer, err := loadOrCreateHostKey(s.KeyPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = ln.Close() })
-	go func() {
-		for {
-			c, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			go s.handle(c, signer)
-		}
-	}()
+	s.Addr = s.ListenAddr().String()
+	t.Cleanup(func() { _ = s.Close() })
+	go func() { _ = s.Serve() }()
 	return s
 }
 
