@@ -48,6 +48,14 @@ func rateKey(ip, service string) string {
 	return ip + "\x00" + service
 }
 
+func php2shellEvent(ev queue.Event) bool {
+	if ev.Raw == nil {
+		return false
+	}
+	v, _ := ev.Raw["attack"].(string)
+	return v == "php2shell"
+}
+
 // Report wraps sink so servers keep calling func(queue.Event).
 func (t *Tracker) Report(sink func(queue.Event)) func(queue.Event) {
 	return func(ev queue.Event) {
@@ -67,6 +75,15 @@ func (t *Tracker) Report(sink func(queue.Event)) func(queue.Event) {
 
 // Observe records ev and returns the events that should be queued.
 func (t *Tracker) Observe(ev queue.Event) []queue.Event {
+	// A tagged upload-progress attempt must not disappear behind the
+	// per-minute connection cap, and its summary must stay intact.
+	if php2shellEvent(ev) {
+		if ev.EventType == "" {
+			ev.EventType = "connection"
+		}
+		return []queue.Event{ev}
+	}
+
 	now := t.now()
 	login := strings.EqualFold(ev.EventType, "login_attempt")
 

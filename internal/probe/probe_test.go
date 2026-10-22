@@ -175,6 +175,36 @@ func TestScanSummaryHonest(t *testing.T) {
 	}
 }
 
+func TestPHP2ShellSkipsRateLimit(t *testing.T) {
+	start := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
+	now := start
+	tr := NewWithClock(func() time.Time { return now })
+	_ = tr.Observe(queue.Event{Service: "http", SourceIP: "203.0.113.50", EventType: "connection"})
+	now = start.Add(time.Second)
+	tagged := queue.Event{
+		Service:   "http",
+		SourceIP:  "203.0.113.50",
+		EventType: "connection",
+		Summary:   "PHP2Shell probe",
+		Raw:       map[string]any{"attack": "php2shell", "method": "POST", "path": "/"},
+	}
+	got := tr.Observe(tagged)
+	if len(got) != 1 {
+		t.Fatalf("tagged attempt dropped: %+v", got)
+	}
+	if got[0].EventType != "connection" || got[0].Summary != "PHP2Shell probe" {
+		t.Fatalf("rewritten %+v", got[0])
+	}
+	if got[0].Raw["attack"] != "php2shell" {
+		t.Fatalf("raw %+v", got[0].Raw)
+	}
+	now = start.Add(2 * time.Second)
+	again := tr.Observe(tagged)
+	if len(again) != 1 || again[0].Summary != "PHP2Shell probe" {
+		t.Fatalf("second tagged attempt %+v", again)
+	}
+}
+
 func TestReportWrapper(t *testing.T) {
 	var got []queue.Event
 	tr := New()

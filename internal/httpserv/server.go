@@ -111,13 +111,25 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	}()
 	allowed := r.Method == http.MethodGet || r.Method == http.MethodPost || r.Method == http.MethodHead
 
+	var posted []byte
+	if allowed && r.Method == http.MethodPost {
+		posted = readLimitedPost(r)
+	}
 	user, pass := "", ""
 	if allowed {
 		user, pass = extractCreds(r)
 	}
+	attack := php2shellAttempt(r, posted)
 
 	if s.Report != nil {
 		raw := map[string]any{"path": r.URL.Path, "method": r.Method}
+		loginSummary := "HTTP login_attempt user=" + user
+		connSummary := "HTTP connection " + r.Method + " " + r.URL.Path
+		if attack {
+			raw["attack"] = "php2shell"
+			loginSummary = "PHP2Shell probe"
+			connSummary = "PHP2Shell probe"
+		}
 		if user != "" || pass != "" {
 			s.Report(queue.Event{
 				Service:    "http",
@@ -127,7 +139,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 				SourcePort: sport,
 				UserAgent:  clip(r.UserAgent(), 400),
 				EventType:  "login_attempt",
-				Summary:    "HTTP login_attempt user=" + user,
+				Summary:    loginSummary,
 				Raw:        raw,
 			})
 			jarnis.Logf("http capture %s user=%q path=%q (denied)", src, user, r.URL.Path)
@@ -138,7 +150,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 				SourcePort: sport,
 				UserAgent:  clip(r.UserAgent(), 400),
 				EventType:  "connection",
-				Summary:    "HTTP connection " + r.Method + " " + r.URL.Path,
+				Summary:    connSummary,
 				Raw:        raw,
 			})
 		}
