@@ -140,14 +140,22 @@ The image has a Docker `HEALTHCHECK` (`/jarnis-honeypot healthcheck`, every 30s,
 | SSH, Telnet and HTTP listeners all accepting (serve loop in `Accept()`, or back in it within 30s) | `healthy` (`healthy: serving`) |
 | A listener closed, failed, or its serve loop is stuck | heartbeat stops → `unhealthy` after at most ~90s + 3 retries |
 | Process hung or crashed | heartbeat goes stale → `unhealthy` (crashes also exit the container) |
-| **Waiting for `HONEYPOT_TOKEN`** (missing or too short) | `healthy`; the health log says *waiting for HONEYPOT_TOKEN — no decoy ports open yet* |
+| **Waiting for a valid `HONEYPOT_TOKEN`** (missing/too short, or JARNIS answers 401/403), up to `JARNIS_TOKEN_WAIT_MAX` (default `24h`) | `healthy`; health log: *healthy (process alive) but waiting for a valid HONEYPOT_TOKEN for … of max 24h* |
+| Still waiting after `JARNIS_TOKEN_WAIT_MAX` | `unhealthy`; health log: *waiting for a valid HONEYPOT_TOKEN for 25h… (limit JARNIS_TOKEN_WAIT_MAX=24h)* |
 
-**Missing token + autoheal.** Tools such as `willfarrell/autoheal`, or orchestrators that restart unhealthy containers, would put a sensor without a token into an endless restart loop if "waiting for token" counted as unhealthy. A restart cannot supply a missing environment variable, so it would never help. For that reason the waiting state is reported as healthy, and the problem shows up where it can be fixed:
-- `docker logs jarnis-honeypot` repeats `waiting for HONEYPOT_TOKEN`.
-- `docker inspect --format '{{json .State.Health.Log}}' jarnis-honeypot` shows the waiting message.
-- In the JARNIS app the sensor never comes online.
+**When does "waiting for token" apply?**
+- No usable `HONEYPOT_TOKEN` in the environment: from start, before any decoy port opens.
+- The token never worked: from the first 401/403 on the config fetch or credential check-in.
+- The token worked and was then revoked or rotated: after **12 consecutive** 401/403 answers (`AuthFailThreshold`, the same as the per-event retry limit of the backhaul queue). From then on the heartbeat no longer counts as `serving`, and the 24 h limit runs from the first rejection of the streak. Network errors and 5xx neither count toward nor reset the streak; any accepted request ends the waiting state.
 
-To catch this in monitoring, alert on "sensor not seen" in JARNIS (or grep the health log for `waiting for HONEYPOT_TOKEN`), not on Docker health. If you run autoheal, keep its default `AUTOHEAL_START_PERIOD` at or above the image's 60s start period, so a slow first start isn't restarted.
+Retries keep their back-off. After a 401/403 the config fetch and the credential check-in wait `AuthRetryDelay` (15 min, ±20 % jitter), so a revoked token never becomes a tight 401 loop.
+
+**Why healthy first, then unhealthy?** Tools such as `willfarrell/autoheal`, or orchestrators that restart unhealthy containers, would restart-loop a sensor whose token is missing if that counted as unhealthy right away. A restart cannot supply an environment variable or un-revoke a token. A sensor stuck for a day must still become visible, though, so after `JARNIS_TOKEN_WAIT_MAX` it turns unhealthy. Set e.g. `-e JARNIS_TOKEN_WAIT_MAX=6h` for a shorter limit; an invalid value falls back to 24h with a warning in the health log. Where to look:
+- `docker logs jarnis-honeypot`: `waiting for HONEYPOT_TOKEN` or `HONEYPOT_TOKEN rejected 12× in a row`.
+- `docker inspect --format '{{json .State.Health.Log}}' jarnis-honeypot` shows the waiting message with the elapsed time.
+- In the JARNIS app the sensor never comes online, or goes offline.
+
+If you run autoheal, keep its default `AUTOHEAL_START_PERIOD` at or above the image's 60s start period, so a slow first start isn't restarted.
 
 ## Logging
 

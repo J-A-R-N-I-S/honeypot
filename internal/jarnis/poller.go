@@ -42,6 +42,10 @@ type Poller struct {
 	SetIdentity func(id string)
 	Interval    func() time.Duration // wait after a successful fetch
 	CachePath   string               // "" disables the cache
+	// Auth (optional) is told about every 401/403 and every success (H2a).
+	Auth *AuthWatch
+	// now is replaced in tests (nil = time.Now).
+	now func() time.Time
 
 	// sleep is replaced in tests; it returns false when ctx is done.
 	sleep func(ctx context.Context, d time.Duration) bool
@@ -101,6 +105,10 @@ func (p *Poller) Run(ctx context.Context) {
 	if jitter == nil {
 		jitter = randomJitter
 	}
+	now := p.now
+	if now == nil {
+		now = time.Now
+	}
 	failures := 0
 	everOK := false
 	for {
@@ -109,6 +117,7 @@ func (p *Poller) Run(ctx context.Context) {
 		switch {
 		case err != nil && IsAuthError(err):
 			failures++
+			p.Auth.Observe(err, now())
 			wait = jitter(AuthRetryDelay)
 			Logf("config fetch: JARNIS rejected HONEYPOT_TOKEN (%v) — check the token in the app (Honeypots → rotate) and recreate the container; retrying in %s", err, wait.Round(time.Second))
 		case err != nil:
@@ -121,6 +130,7 @@ func (p *Poller) Run(ctx context.Context) {
 			}
 			failures = 0
 			everOK = true
+			p.Auth.Observe(nil, now())
 			if p.SetIdentity != nil && cfg.HoneypotID != "" {
 				p.SetIdentity(cfg.HoneypotID)
 			}

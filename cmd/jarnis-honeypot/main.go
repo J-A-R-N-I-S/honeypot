@@ -67,25 +67,32 @@ func main() {
 	// heartbeat file; it never connects to the decoy ports (that would be
 	// reported as an attack from 127.0.0.1).
 	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
-		state, err := health.CheckState(health.Path(), time.Now(), health.MaxAge)
-		if err != nil {
-			log.Printf("unhealthy: %v", err)
-			os.Exit(1)
+		now := time.Now()
+		limit, warn := health.TokenWaitMax()
+		if warn != "" {
+			log.Print(warn)
 		}
-		if state == health.StateWaitingToken {
-			// Healthy on purpose: restarting cannot supply a missing token (H2).
-			log.Printf("healthy (process alive) but waiting for HONEYPOT_TOKEN — no decoy ports open yet")
-		} else {
-			log.Printf("healthy: %s", state)
+		beat, err := health.ReadBeat(health.Path(), now, health.MaxAge)
+		if err == nil {
+			// waiting-token: healthy up to JARNIS_TOKEN_WAIT_MAX (default 24h, H2a),
+			// so autoheal does not restart-loop, but a stuck sensor still surfaces.
+			var msg string
+			msg, err = health.Evaluate(beat, now, limit)
+			if err == nil {
+				log.Print(msg)
+				os.Exit(0)
+			}
 		}
-		os.Exit(0)
+		log.Printf("unhealthy: %v", err)
+		os.Exit(1)
 	}
 
 	token := tokenFromEnv()
 	if !validToken(token) {
 		log.Printf("waiting for HONEYPOT_TOKEN (env only — not the start command)")
+		waitSince := time.Now()
 		for {
-			if err := health.TouchState(health.Path(), time.Now(), health.StateWaitingToken); err != nil {
+			if err := health.TouchWaiting(health.Path(), time.Now(), waitSince); err != nil {
 				log.Printf("health heartbeat: %v", err)
 			}
 			time.Sleep(15 * time.Second)
@@ -166,7 +173,9 @@ func main() {
 	case "off", "none":
 		cachePath = ""
 	}
+	auth := &jarnis.AuthWatch{}
 	poller := &jarnis.Poller{
+		Auth:        auth,
 		Fetch:       cli.FetchConfig,
 		Apply:       apply,
 		SetIdentity: cli.SetHoneypotID,
@@ -214,7 +223,13 @@ func main() {
 		for {
 			err := listeners.Healthy(time.Now(), 30*time.Second)
 			if err == nil {
-				err = health.Touch(hp, time.Now())
+				// H2a: a rejected token is not "OK" — report waiting-token
+				// (healthy only up to JARNIS_TOKEN_WAIT_MAX).
+				if w, since := auth.Waiting(); w {
+					err = health.TouchWaiting(hp, time.Now(), since)
+				} else {
+					err = health.Touch(hp, time.Now())
+				}
 			}
 			msg := ""
 			if err != nil {
@@ -248,9 +263,16 @@ func main() {
 				SourceIP: ev.SourceIP, SourcePort: ev.SourcePort, UserAgent: ev.UserAgent, SessionID: ev.SessionID,
 				EventType: ev.EventType, Summary: ev.Summary, Raw: ev.Raw,
 			}
-			if err := cli.PostCredential(ce); err != nil {
+			err := cli.PostCredential(ce)
+			auth.Observe(err, time.Now())
+			if err != nil {
 				log.Printf("backhaul retry: %v", err)
-				q.Retry(ev, time.Duration(2+ev.Tries)*time.Second)
+				delay := time.Duration(2+ev.Tries) * time.Second
+				if jarnis.IsAuthError(err) {
+					// Rejected token: do not hammer the API (same back-off as config).
+					delay = jarnis.AuthRetryDelay
+				}
+				q.Retry(ev, delay)
 			}
 		}
 	}()
