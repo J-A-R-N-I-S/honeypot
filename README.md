@@ -26,7 +26,7 @@ Live sensor uses ~6 MB RAM. A 64 MB limit leaves room for other services without
 
 **Before you run it:** move the host's own sshd off port 22 (for example to 2222) and confirm a login on the new port — the decoy takes 22. Published ports bind on all interfaces (`0.0.0.0` / `[::]`) on purpose: the honeypot must be reachable from the internet. Docker-published ports **bypass ufw** (Docker writes its own iptables rules), so `ufw deny 22` does not hide the decoy — and do not publish anything else from this host you would not expose. See [Ports and firewall](#ports-and-firewall).
 
-The named volume `jarnis-honeypot-state` holds the SSH host key (`/var/lib/jarnis-honeypot/ssh_host_ecdsa`) and the last good config (`config.json`, see [Startup and offline behaviour](#startup-and-offline-behaviour)). Without it the key is regenerated on every recreate (the root filesystem is read-only), and a changing fingerprint is an easy honeypot tell. Keep the volume when you recreate or update the container.
+The named volume `jarnis-honeypot-state` holds the SSH host key (`/var/lib/jarnis-honeypot/ssh_host_ecdsa`) and the last good config (`config.json`, see [Startup and offline behaviour](#startup-and-offline-behaviour)). Without it the key is regenerated on every recreate (the root filesystem is read-only), and a changing fingerprint is an easy honeypot tell. Keep the volume when you recreate or update the container. With compose the volume name can be overridden with `HONEYPOT_VOLUME` (in `.env` or the environment). The default is still `jarnis-honeypot-state`, so existing installs keep their volume; set it only for a second instance or to reuse an existing volume under another name, e.g. `HONEYPOT_VOLUME=jarnis-honeypot-state-b docker compose -p hp-b up -d`.
 
 3. Check: `ssh user@HOST` fails, `curl http://HOST:8080/` shows the login page, the attempt appears on the dashboard.
 4. Install the host auto-update timer (the container cannot pull Hub). See [Auto-update](#auto-update-docker-hub) or https://jarnis.io/guides/honeypot-auto-update.html
@@ -130,6 +130,51 @@ The value must be `SSH-2.0-<software>[ <comment>]`, printable ASCII, at most 253
 ## Container hardening
 
 The recommended flags: `--read-only`, `--cap-drop ALL`, `--security-opt no-new-privileges:true`, `--pids-limit 64`, `--cpus 0.25`, `--memory 64m`, `--tmpfs /tmp:size=8m,mode=1777`, plus the state volume on `/var/lib/jarnis-honeypot`. The sensor runs as root inside the container, but with no capabilities at all (no `CAP_DAC_OVERRIDE`, `CAP_CHOWN`, `CAP_FOWNER`), so it can only write the state directory because it owns it: the image creates `/var/lib/jarnis-honeypot` as `root:root 0700` and Docker copies that owner and mode into a new named volume. If you use a bind mount instead, make the host directory `root:root` with mode `0700` (`install -d -o root -g root -m 700 /srv/jarnis-honeypot`); a directory owned by another user makes the host key ephemeral and disables the config cache (both logged). The sensor binds 22/23 inside the container without `CAP_NET_BIND_SERVICE` only because Docker sets `net.ipv4.ip_unprivileged_port_start=0` in the container's network namespace (default for bridge networks since Docker 20.10). With `--network host`, or a runtime that does not set this sysctl, binding 22/23 fails under `--cap-drop ALL`. `docker-compose.yml` uses the same settings; the host updater enforces them on every recreate.
+
+## Health check
+
+The image has a Docker `HEALTHCHECK` (`/jarnis-honeypot healthcheck`, every 30s, timeout 5s, start period 60s, 3 retries). It never connects to the decoy ports, because a self-probe would be captured and reported to JARNIS as an attack from 127.0.0.1. Instead the sensor writes a heartbeat file, `/tmp/jarnis-honeypot.health`, on the `/tmp` tmpfs every 15s. The healthcheck only reads that file.
+
+| State | `docker inspect --format '{{.State.Health.Status}}'` |
+|---|---|
+| SSH, Telnet and HTTP listeners all accepting (serve loop in `Accept()`, or back in it within 30s) | `healthy` (`healthy: serving`) |
+| A listener closed, failed, or its serve loop is stuck | heartbeat stops → `unhealthy` after at most ~90s + 3 retries |
+| Process hung or crashed | heartbeat goes stale → `unhealthy` (crashes also exit the container) |
+| **Waiting for a valid `HONEYPOT_TOKEN`** (missing/too short, or JARNIS answers 401/403), up to `JARNIS_TOKEN_WAIT_MAX` (default `24h`) | `healthy`; health log: *healthy (process alive) but waiting for a valid HONEYPOT_TOKEN for … of max 24h* |
+| Still waiting after `JARNIS_TOKEN_WAIT_MAX` | `unhealthy`; health log: *waiting for a valid HONEYPOT_TOKEN for 25h… (limit JARNIS_TOKEN_WAIT_MAX=24h)* |
+
+**When does "waiting for token" apply?**
+- No usable `HONEYPOT_TOKEN` in the environment: from start, before any decoy port opens.
+- The token never worked: from the first 401/403 on the config fetch or credential check-in.
+- The token worked and was then revoked or rotated: after **12 consecutive** 401/403 answers (`AuthFailThreshold`, the same as the per-event retry limit of the backhaul queue). From then on the heartbeat no longer counts as `serving`, and the 24 h limit runs from the first rejection of the streak. Network errors and 5xx neither count toward nor reset the streak; any accepted request ends the waiting state.
+
+Retries keep their back-off. After a 401/403 the config fetch and the credential check-in wait `AuthRetryDelay` (15 min, ±20 % jitter), so a revoked token never becomes a tight 401 loop.
+
+**Why healthy first, then unhealthy?** Tools such as `willfarrell/autoheal`, or orchestrators that restart unhealthy containers, would restart-loop a sensor whose token is missing if that counted as unhealthy right away. A restart cannot supply an environment variable or un-revoke a token. A sensor stuck for a day must still become visible, though, so after `JARNIS_TOKEN_WAIT_MAX` it turns unhealthy. Set e.g. `-e JARNIS_TOKEN_WAIT_MAX=6h` for a shorter limit; an invalid value falls back to 24h with a warning in the health log. Where to look:
+- `docker logs jarnis-honeypot`: `waiting for HONEYPOT_TOKEN` or `HONEYPOT_TOKEN rejected 12× in a row`.
+- `docker inspect --format '{{json .State.Health.Log}}' jarnis-honeypot` shows the waiting message with the elapsed time.
+- In the JARNIS app the sensor never comes online, or goes offline.
+
+**Upstream reachability is ignored on purpose.** The healthcheck only says whether the decoy listeners accept, not whether jarnis.io answers. A jarnis.io or network outage must not make the container unhealthy, because autoheal would then restart every sensor in a loop exactly when the API is down, and a restart doesn't fix the network. During an outage the sensor keeps serving from the cached config, and captured events are queued (bounded: 500 events, 12 tries each) and retried with back-off. Auth problems (missing, revoked or rotated token) are the exception: they are covered by the waiting-token rule above (healthy for up to `JARNIS_TOKEN_WAIT_MAX`, default 24h, then unhealthy).
+
+**Testing "unhealthy" by hand.** Don't use `docker exec <ctr> kill -STOP 1`: the sensor is PID 1 of the container's PID namespace, and the kernel ignores SIGSTOP/SIGKILL sent to it from inside that namespace, so nothing happens. Freeze the process from the host instead:
+```bash
+docker pause jarnis-honeypot            # or: kill -STOP "$(docker inspect -f '{{.State.Pid}}' jarnis-honeypot)"
+# heartbeat goes stale; measured on staging: unhealthy after ~155 s ("heartbeat stale")
+docker unpause jarnis-honeypot          # or: kill -CONT <same pid>
+```
+
+If you run autoheal, keep its default `AUTOHEAL_START_PERIOD` at or above the image's 60s start period, so a slow first start isn't restarted.
+
+## Logging
+
+The sensor writes one line per HTTP request, SSH or Telnet login attempt (passwords are never logged; usernames are clipped to 64 characters). Cap the container log so a busy decoy can't fill the disk:
+
+```bash
+docker run … --log-driver json-file --log-opt max-size=10m --log-opt max-file=3 … jarnis/honeypot:latest
+```
+
+`docker-compose.yml` sets the same (`logging:` block). The host updater (`jarnis-honeypot-update.sh`) carries the log driver and options over to the recreated container.
 
 ## Multiple instances on one host
 

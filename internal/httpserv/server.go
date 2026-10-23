@@ -19,14 +19,16 @@ import (
 )
 
 type Server struct {
-	Addr    string
-	Designs func() []jarnis.Design
-	Mode    func() string
-	Report  func(queue.Event)
-	rr      atomic.Uint64
-	mu      sync.Mutex
-	server  *http.Server
-	ln      net.Listener
+	Addr string
+	// WrapListener (optional) wraps the bound listener, e.g. health.Tracker.Wrap.
+	WrapListener func(net.Listener) net.Listener
+	Designs      func() []jarnis.Design
+	Mode         func() string
+	Report       func(queue.Event)
+	rr           atomic.Uint64
+	mu           sync.Mutex
+	server       *http.Server
+	ln           net.Listener
 }
 
 // Listen opens the TCP listener without serving yet (see Serve).
@@ -34,6 +36,9 @@ func (s *Server) Listen() error {
 	ln, err := net.Listen("tcp", s.Addr)
 	if err != nil {
 		return err
+	}
+	if s.WrapListener != nil {
+		ln = s.WrapListener(ln)
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handle)
@@ -142,7 +147,6 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 				Summary:    loginSummary,
 				Raw:        raw,
 			})
-			jarnis.Logf("http capture %s user=%q path=%q (denied)", src, user, r.URL.Path)
 		} else {
 			s.Report(queue.Event{
 				Service:    "http",
@@ -155,6 +159,8 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 	}
+
+	logHit(src, r, user, pass, attack)
 
 	if !allowed {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -287,3 +293,20 @@ func clip(s string, n int) string {
 
 // Escape is available if templates ever interpolate attacker text into HTML.
 func Escape(s string) string { return html.EscapeString(s) }
+
+// logHit writes one container-log line per HTTP request (P28). Before, only
+// requests with credentials were logged, so PHP2Shell probes and plain hits
+// were reported to JARNIS but invisible in `docker logs`. Never logs the
+// password; path and user agent are quoted and clipped.
+func logHit(src string, r *http.Request, user, pass string, attack bool) {
+	path := clip(r.URL.Path, 200)
+	ua := clip(r.UserAgent(), 120)
+	switch {
+	case attack:
+		jarnis.Logf("http php2shell probe %s %s path=%q ua=%q", src, r.Method, path, ua)
+	case user != "" || pass != "":
+		jarnis.Logf("http capture %s user=%q path=%q (denied)", src, clip(user, 64), path) // L1: user clipped to 64
+	default:
+		jarnis.Logf("http hit %s %s path=%q ua=%q", src, r.Method, path, ua)
+	}
+}

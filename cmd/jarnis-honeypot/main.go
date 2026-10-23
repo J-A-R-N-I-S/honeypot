@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/j-a-r-n-i-s/honeypot/internal/health"
 	"github.com/j-a-r-n-i-s/honeypot/internal/httpserv"
 	"github.com/j-a-r-n-i-s/honeypot/internal/jarnis"
 	"github.com/j-a-r-n-i-s/honeypot/internal/probe"
@@ -62,10 +63,38 @@ func main() {
 	log.SetFlags(log.LstdFlags | log.Lmsgprefix)
 	log.SetPrefix("jarnis-hp ")
 
+	// Docker HEALTHCHECK (P31): `jarnis-honeypot healthcheck` only reads the
+	// heartbeat file; it never connects to the decoy ports (that would be
+	// reported as an attack from 127.0.0.1).
+	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
+		now := time.Now()
+		limit, warn := health.TokenWaitMax()
+		if warn != "" {
+			log.Print(warn)
+		}
+		beat, err := health.ReadBeat(health.Path(), now, health.MaxAge)
+		if err == nil {
+			// waiting-token: healthy up to JARNIS_TOKEN_WAIT_MAX (default 24h, H2a),
+			// so autoheal does not restart-loop, but a stuck sensor still surfaces.
+			var msg string
+			msg, err = health.Evaluate(beat, now, limit)
+			if err == nil {
+				log.Print(msg)
+				os.Exit(0)
+			}
+		}
+		log.Printf("unhealthy: %v", err)
+		os.Exit(1)
+	}
+
 	token := tokenFromEnv()
 	if !validToken(token) {
 		log.Printf("waiting for HONEYPOT_TOKEN (env only — not the start command)")
+		waitSince := time.Now()
 		for {
+			if err := health.TouchWaiting(health.Path(), time.Now(), waitSince); err != nil {
+				log.Printf("health heartbeat: %v", err)
+			}
 			time.Sleep(15 * time.Second)
 			token = tokenFromEnv()
 			if validToken(token) {
@@ -144,7 +173,9 @@ func main() {
 	case "off", "none":
 		cachePath = ""
 	}
+	auth := &jarnis.AuthWatch{}
 	poller := &jarnis.Poller{
+		Auth:        auth,
 		Fetch:       cli.FetchConfig,
 		Apply:       apply,
 		SetIdentity: cli.SetHoneypotID,
@@ -159,17 +190,20 @@ func main() {
 	// the listeners have the right look even when the API is unreachable.
 	poller.LoadCache()
 
+	// H1: the heartbeat is only refreshed while all three listeners accept.
+	listeners := health.NewTracker("ssh", "telnet", "http")
+
 	// Open every port BEFORE talking to the API: a slow or unreachable
 	// control plane must never keep the decoy offline.
-	sshSrv := &sshserv.Server{Addr: ":" + strconv.Itoa(sshPort), KeyPath: "/var/lib/jarnis-honeypot/ssh_host_ecdsa", Banner: bannerSSH, Version: sshVersion, Report: report}
+	sshSrv := &sshserv.Server{WrapListener: listeners.Wrap("ssh"), Addr: ":" + strconv.Itoa(sshPort), KeyPath: "/var/lib/jarnis-honeypot/ssh_host_ecdsa", Banner: bannerSSH, Version: sshVersion, Report: report}
 	if err := sshSrv.Listen(); err != nil {
 		log.Fatalf("ssh listen %s: %v", sshSrv.Addr, err)
 	}
-	telSrv := &telserv.Server{Addr: ":" + strconv.Itoa(telPort), Banner: bannerTel, Report: report}
+	telSrv := &telserv.Server{WrapListener: listeners.Wrap("telnet"), Addr: ":" + strconv.Itoa(telPort), Banner: bannerTel, Report: report}
 	if err := telSrv.Listen(); err != nil {
 		log.Fatalf("telnet listen %s: %v", telSrv.Addr, err)
 	}
-	httpSrv := &httpserv.Server{Addr: ":" + strconv.Itoa(httpPort), Designs: designs, Mode: mode, Report: report}
+	httpSrv := &httpserv.Server{WrapListener: listeners.Wrap("http"), Addr: ":" + strconv.Itoa(httpPort), Designs: designs, Mode: mode, Report: report}
 	if err := httpSrv.Listen(); err != nil {
 		log.Fatalf("http listen %s: %v", httpSrv.Addr, err)
 	}
@@ -178,6 +212,40 @@ func main() {
 	go func() { log.Fatalf("http: %v", httpSrv.Serve()) }()
 
 	log.Printf("sensor up ports ssh=:%d telnet=:%d http=:%d", sshPort, telPort, httpPort)
+
+	// Heartbeat for the container HEALTHCHECK (H1): refreshed every 15s only
+	// while every decoy listener is still accepting; otherwise it goes stale
+	// and the healthcheck turns unhealthy after health.MaxAge.
+	go func() {
+		hp := health.Path()
+		lastErr := ""
+		time.Sleep(2 * time.Second) // let the Serve goroutines reach Accept()
+		for {
+			err := listeners.Healthy(time.Now(), 30*time.Second)
+			if err == nil {
+				// H2a: a rejected token is not "OK" — report waiting-token
+				// (healthy only up to JARNIS_TOKEN_WAIT_MAX).
+				if w, since := auth.Waiting(); w {
+					err = health.TouchWaiting(hp, time.Now(), since)
+				} else {
+					err = health.Touch(hp, time.Now())
+				}
+			}
+			msg := ""
+			if err != nil {
+				msg = err.Error()
+			}
+			if msg != lastErr {
+				if msg != "" {
+					log.Printf("health: heartbeat not refreshed: %s", msg)
+				} else if lastErr != "" {
+					log.Printf("health: listeners accepting again")
+				}
+				lastErr = msg
+			}
+			time.Sleep(15 * time.Second)
+		}
+	}()
 	log.Printf("no interactive login is possible — credentials are captured and sent to JARNIS only")
 
 	// Config: fetch now, retry with backoff 5s/10s/30s/60s/60s…, then poll.
@@ -195,9 +263,16 @@ func main() {
 				SourceIP: ev.SourceIP, SourcePort: ev.SourcePort, UserAgent: ev.UserAgent, SessionID: ev.SessionID,
 				EventType: ev.EventType, Summary: ev.Summary, Raw: ev.Raw,
 			}
-			if err := cli.PostCredential(ce); err != nil {
+			err := cli.PostCredential(ce)
+			auth.Observe(err, time.Now())
+			if err != nil {
 				log.Printf("backhaul retry: %v", err)
-				q.Retry(ev, time.Duration(2+ev.Tries)*time.Second)
+				delay := time.Duration(2+ev.Tries) * time.Second
+				if jarnis.IsAuthError(err) {
+					// Rejected token: do not hammer the API (same back-off as config).
+					delay = jarnis.AuthRetryDelay
+				}
+				q.Retry(ev, delay)
 			}
 		}
 	}()

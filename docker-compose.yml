@@ -21,6 +21,12 @@ services:
       - no-new-privileges:true
     tmpfs:
       - /tmp:size=8m,mode=1777
+    # One line per hit: cap the log (30 MB max per container).
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     volumes:
       # State (root:root 0700): SSH host key (ssh_host_ecdsa, keeps the
       # fingerprint across recreates) and the last good config (config.json,
@@ -49,4 +55,8 @@ volumes:
     # `hp-state` on recreate anyway.) To keep the old key instead, copy
     # ssh_host_ecdsa from `<project>_hp-state` into `jarnis-honeypot-state`
     # before `docker compose up -d`.
-    name: jarnis-honeypot-state
+    #
+    # Override with HONEYPOT_VOLUME (e.g. a second instance, or an existing
+    # volume under another name). Default = the previous fixed name, so
+    # existing installs keep their volume (SSH host key + config cache).
+    name: ${HONEYPOT_VOLUME:-jarnis-honeypot-state}

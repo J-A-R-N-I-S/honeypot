@@ -384,7 +384,7 @@ func (c *Client) PostCredential(ev CredEvent) error {
 	defer res.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
 	if res.StatusCode >= 300 {
-		return fmt.Errorf("credentials %d: %s", res.StatusCode, clip(body, 200))
+		return &StatusError{Op: "credentials", Code: res.StatusCode, Body: clip(body, 200)}
 	}
 	return nil
 }
