@@ -142,7 +142,6 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 				Summary:    loginSummary,
 				Raw:        raw,
 			})
-			jarnis.Logf("http capture %s user=%q path=%q (denied)", src, user, r.URL.Path)
 		} else {
 			s.Report(queue.Event{
 				Service:    "http",
@@ -155,6 +154,8 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 	}
+
+	logHit(src, r, user, pass, attack)
 
 	if !allowed {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -287,3 +288,20 @@ func clip(s string, n int) string {
 
 // Escape is available if templates ever interpolate attacker text into HTML.
 func Escape(s string) string { return html.EscapeString(s) }
+
+// logHit writes one container-log line per HTTP request (P28). Before, only
+// requests with credentials were logged, so PHP2Shell probes and plain hits
+// were reported to JARNIS but invisible in `docker logs`. Never logs the
+// password; path and user agent are quoted and clipped.
+func logHit(src string, r *http.Request, user, pass string, attack bool) {
+	path := clip(r.URL.Path, 200)
+	ua := clip(r.UserAgent(), 120)
+	switch {
+	case attack:
+		jarnis.Logf("http php2shell probe %s %s path=%q ua=%q", src, r.Method, path, ua)
+	case user != "" || pass != "":
+		jarnis.Logf("http capture %s user=%q path=%q (denied)", src, user, path)
+	default:
+		jarnis.Logf("http hit %s %s path=%q ua=%q", src, r.Method, path, ua)
+	}
+}

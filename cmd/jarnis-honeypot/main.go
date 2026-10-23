@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/j-a-r-n-i-s/honeypot/internal/health"
 	"github.com/j-a-r-n-i-s/honeypot/internal/httpserv"
 	"github.com/j-a-r-n-i-s/honeypot/internal/jarnis"
 	"github.com/j-a-r-n-i-s/honeypot/internal/probe"
@@ -61,6 +62,17 @@ func fallbackIPFromEnv() string {
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmsgprefix)
 	log.SetPrefix("jarnis-hp ")
+
+	// Docker HEALTHCHECK (P31): `jarnis-honeypot healthcheck` only reads the
+	// heartbeat file; it never connects to the decoy ports (that would be
+	// reported as an attack from 127.0.0.1).
+	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
+		if err := health.Check(health.Path(), time.Now(), health.MaxAge); err != nil {
+			log.Printf("unhealthy: %v", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
 
 	token := tokenFromEnv()
 	if !validToken(token) {
@@ -178,6 +190,20 @@ func main() {
 	go func() { log.Fatalf("http: %v", httpSrv.Serve()) }()
 
 	log.Printf("sensor up ports ssh=:%d telnet=:%d http=:%d", sshPort, telPort, httpPort)
+
+	// Heartbeat for the container HEALTHCHECK: listeners are up (a Serve
+	// failure exits the process via log.Fatalf, which stops the beats).
+	go func() {
+		hp := health.Path()
+		warned := false
+		for {
+			if err := health.Touch(hp, time.Now()); err != nil && !warned {
+				log.Printf("health heartbeat %s: %v", hp, err)
+				warned = true
+			}
+			time.Sleep(15 * time.Second)
+		}
+	}()
 	log.Printf("no interactive login is possible — credentials are captured and sent to JARNIS only")
 
 	// Config: fetch now, retry with backoff 5s/10s/30s/60s/60s…, then poll.
