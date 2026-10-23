@@ -25,9 +25,11 @@ RUN chmod 755 /jarnis-honeypot \
     && printf '%s\n' '#!/bin/sh' 'exec /jarnis-honeypot "$@"' > /start.sh \
     && chmod 755 /start.sh
 EXPOSE 22 23 8080
-# P31: health = heartbeat file on the /tmp tmpfs, refreshed every 15s once all
-# listeners are up. Deliberately not a port probe (would be logged/reported as
-# attacker traffic). Unhealthy while waiting for HONEYPOT_TOKEN.
+# P31: health = heartbeat file on the /tmp tmpfs, refreshed every 15s only while
+# the ssh/telnet/http listeners are all accepting (H1). Deliberately not a port
+# probe (would be logged/reported as attacker traffic). Waiting for
+# HONEYPOT_TOKEN reports healthy with a message, so autoheal cannot restart-loop
+# a sensor without token (H2, see README "Health check").
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
     CMD ["/jarnis-honeypot", "healthcheck"]
 USER root

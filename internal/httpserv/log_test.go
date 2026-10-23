@@ -104,3 +104,22 @@ func TestHitLogIsSingleLineAndClipped(t *testing.T) {
 		t.Fatalf("log injection / unclipped: %d %q", len(out), out)
 	}
 }
+
+func TestCaptureLogClipsUserTo64(t *testing.T) {
+	buf := captureLog(t)
+	var got queue.Event
+	s := &Server{Report: func(ev queue.Event) { got = ev }}
+	long := strings.Repeat("u", 64) + "TAIL-NOT-LOGGED"
+	form := url.Values{"username": {long}, "password": {"x"}}
+	req := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.RemoteAddr = "203.0.113.56:1"
+	s.handle(httptest.NewRecorder(), req)
+	out := buf.String()
+	if !strings.Contains(out, `user="`+strings.Repeat("u", 64)+`"`) || strings.Contains(out, "TAIL-NOT-LOGGED") {
+		t.Fatalf("user must be clipped to 64 in the log: %q", out)
+	}
+	if got.Username != long {
+		t.Fatalf("report to JARNIS keeps the full username, got %q", got.Username)
+	}
+}

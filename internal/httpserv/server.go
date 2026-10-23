@@ -19,14 +19,16 @@ import (
 )
 
 type Server struct {
-	Addr    string
-	Designs func() []jarnis.Design
-	Mode    func() string
-	Report  func(queue.Event)
-	rr      atomic.Uint64
-	mu      sync.Mutex
-	server  *http.Server
-	ln      net.Listener
+	Addr string
+	// WrapListener (optional) wraps the bound listener, e.g. health.Tracker.Wrap.
+	WrapListener func(net.Listener) net.Listener
+	Designs      func() []jarnis.Design
+	Mode         func() string
+	Report       func(queue.Event)
+	rr           atomic.Uint64
+	mu           sync.Mutex
+	server       *http.Server
+	ln           net.Listener
 }
 
 // Listen opens the TCP listener without serving yet (see Serve).
@@ -34,6 +36,9 @@ func (s *Server) Listen() error {
 	ln, err := net.Listen("tcp", s.Addr)
 	if err != nil {
 		return err
+	}
+	if s.WrapListener != nil {
+		ln = s.WrapListener(ln)
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handle)
@@ -300,7 +305,7 @@ func logHit(src string, r *http.Request, user, pass string, attack bool) {
 	case attack:
 		jarnis.Logf("http php2shell probe %s %s path=%q ua=%q", src, r.Method, path, ua)
 	case user != "" || pass != "":
-		jarnis.Logf("http capture %s user=%q path=%q (denied)", src, user, path)
+		jarnis.Logf("http capture %s user=%q path=%q (denied)", src, clip(user, 64), path) // L1: user clipped to 64
 	default:
 		jarnis.Logf("http hit %s %s path=%q ua=%q", src, r.Method, path, ua)
 	}

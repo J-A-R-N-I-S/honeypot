@@ -29,7 +29,9 @@ import (
 type Server struct {
 	Addr    string
 	KeyPath string
-	Banner  func() string
+	// WrapListener (optional) wraps the bound listener, e.g. health.Tracker.Wrap.
+	WrapListener func(net.Listener) net.Listener
+	Banner       func() string
 	// Version returns the SSH identification string override (for example
 	// from SSH_SERVER_VERSION). "" or an invalid value means the per-install
 	// default picked from the host key (VersionForHostKey).
@@ -53,6 +55,9 @@ func (s *Server) Listen() error {
 	ln, err := net.Listen("tcp", s.Addr)
 	if err != nil {
 		return err
+	}
+	if s.WrapListener != nil {
+		ln = s.WrapListener(ln)
 	}
 	s.mu.Lock()
 	s.listener = ln

@@ -67,9 +67,16 @@ func main() {
 	// heartbeat file; it never connects to the decoy ports (that would be
 	// reported as an attack from 127.0.0.1).
 	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
-		if err := health.Check(health.Path(), time.Now(), health.MaxAge); err != nil {
+		state, err := health.CheckState(health.Path(), time.Now(), health.MaxAge)
+		if err != nil {
 			log.Printf("unhealthy: %v", err)
 			os.Exit(1)
+		}
+		if state == health.StateWaitingToken {
+			// Healthy on purpose: restarting cannot supply a missing token (H2).
+			log.Printf("healthy (process alive) but waiting for HONEYPOT_TOKEN — no decoy ports open yet")
+		} else {
+			log.Printf("healthy: %s", state)
 		}
 		os.Exit(0)
 	}
@@ -78,6 +85,9 @@ func main() {
 	if !validToken(token) {
 		log.Printf("waiting for HONEYPOT_TOKEN (env only — not the start command)")
 		for {
+			if err := health.TouchState(health.Path(), time.Now(), health.StateWaitingToken); err != nil {
+				log.Printf("health heartbeat: %v", err)
+			}
 			time.Sleep(15 * time.Second)
 			token = tokenFromEnv()
 			if validToken(token) {
@@ -171,17 +181,20 @@ func main() {
 	// the listeners have the right look even when the API is unreachable.
 	poller.LoadCache()
 
+	// H1: the heartbeat is only refreshed while all three listeners accept.
+	listeners := health.NewTracker("ssh", "telnet", "http")
+
 	// Open every port BEFORE talking to the API: a slow or unreachable
 	// control plane must never keep the decoy offline.
-	sshSrv := &sshserv.Server{Addr: ":" + strconv.Itoa(sshPort), KeyPath: "/var/lib/jarnis-honeypot/ssh_host_ecdsa", Banner: bannerSSH, Version: sshVersion, Report: report}
+	sshSrv := &sshserv.Server{WrapListener: listeners.Wrap("ssh"), Addr: ":" + strconv.Itoa(sshPort), KeyPath: "/var/lib/jarnis-honeypot/ssh_host_ecdsa", Banner: bannerSSH, Version: sshVersion, Report: report}
 	if err := sshSrv.Listen(); err != nil {
 		log.Fatalf("ssh listen %s: %v", sshSrv.Addr, err)
 	}
-	telSrv := &telserv.Server{Addr: ":" + strconv.Itoa(telPort), Banner: bannerTel, Report: report}
+	telSrv := &telserv.Server{WrapListener: listeners.Wrap("telnet"), Addr: ":" + strconv.Itoa(telPort), Banner: bannerTel, Report: report}
 	if err := telSrv.Listen(); err != nil {
 		log.Fatalf("telnet listen %s: %v", telSrv.Addr, err)
 	}
-	httpSrv := &httpserv.Server{Addr: ":" + strconv.Itoa(httpPort), Designs: designs, Mode: mode, Report: report}
+	httpSrv := &httpserv.Server{WrapListener: listeners.Wrap("http"), Addr: ":" + strconv.Itoa(httpPort), Designs: designs, Mode: mode, Report: report}
 	if err := httpSrv.Listen(); err != nil {
 		log.Fatalf("http listen %s: %v", httpSrv.Addr, err)
 	}
@@ -191,15 +204,29 @@ func main() {
 
 	log.Printf("sensor up ports ssh=:%d telnet=:%d http=:%d", sshPort, telPort, httpPort)
 
-	// Heartbeat for the container HEALTHCHECK: listeners are up (a Serve
-	// failure exits the process via log.Fatalf, which stops the beats).
+	// Heartbeat for the container HEALTHCHECK (H1): refreshed every 15s only
+	// while every decoy listener is still accepting; otherwise it goes stale
+	// and the healthcheck turns unhealthy after health.MaxAge.
 	go func() {
 		hp := health.Path()
-		warned := false
+		lastErr := ""
+		time.Sleep(2 * time.Second) // let the Serve goroutines reach Accept()
 		for {
-			if err := health.Touch(hp, time.Now()); err != nil && !warned {
-				log.Printf("health heartbeat %s: %v", hp, err)
-				warned = true
+			err := listeners.Healthy(time.Now(), 30*time.Second)
+			if err == nil {
+				err = health.Touch(hp, time.Now())
+			}
+			msg := ""
+			if err != nil {
+				msg = err.Error()
+			}
+			if msg != lastErr {
+				if msg != "" {
+					log.Printf("health: heartbeat not refreshed: %s", msg)
+				} else if lastErr != "" {
+					log.Printf("health: listeners accepting again")
+				}
+				lastErr = msg
 			}
 			time.Sleep(15 * time.Second)
 		}

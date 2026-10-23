@@ -52,3 +52,21 @@ func TestPathEnvOverride(t *testing.T) {
 		t.Fatal(Path())
 	}
 }
+
+func TestStateRoundTrip(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "hb")
+	now := time.Now()
+	if err := TouchState(p, now, StateWaitingToken); err != nil {
+		t.Fatal(err)
+	}
+	st, err := CheckState(p, now, MaxAge)
+	if err != nil || st != StateWaitingToken {
+		t.Fatalf("waiting-token heartbeat must be healthy with its state: %q %v", st, err)
+	}
+	if err := Touch(p, now); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := CheckState(p, now, MaxAge); st != StateServing {
+		t.Fatalf("state %q", st)
+	}
+}

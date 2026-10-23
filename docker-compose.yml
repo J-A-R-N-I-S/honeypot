@@ -21,6 +21,12 @@ services:
       - no-new-privileges:true
     tmpfs:
       - /tmp:size=8m,mode=1777
+    # One line per hit: cap the log (30 MB max per container).
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     volumes:
       # State (root:root 0700): SSH host key (ssh_host_ecdsa, keeps the
       # fingerprint across recreates) and the last good config (config.json,

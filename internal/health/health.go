@@ -9,7 +9,14 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"time"
+)
+
+// Heartbeat states written by the sensor.
+const (
+	StateServing      = "serving"       // all decoy listeners accepting
+	StateWaitingToken = "waiting-token" // no valid HONEYPOT_TOKEN yet (review H2)
 )
 
 // DefaultPath lives on the /tmp tmpfs (read-only rootfs; recreated per
@@ -19,10 +26,13 @@ const DefaultPath = "/tmp/jarnis-honeypot.health"
 // MaxAge: heartbeat interval is 15s, so 90s tolerates a few missed beats.
 const MaxAge = 90 * time.Second
 
-// Touch writes the heartbeat (content is the unix time, for debugging).
-func Touch(path string, now time.Time) error {
+// Touch writes a "serving" heartbeat.
+func Touch(path string, now time.Time) error { return TouchState(path, now, StateServing) }
+
+// TouchState writes the heartbeat atomically: "<unix time> <state>\n".
+func TouchState(path string, now time.Time, state string) error {
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, []byte(fmt.Sprintf("%d\n", now.Unix())), 0o600); err != nil {
+	if err := os.WriteFile(tmp, []byte(fmt.Sprintf("%d %s\n", now.Unix(), state)), 0o600); err != nil {
 		return err
 	}
 	return os.Rename(tmp, path)
@@ -30,18 +40,35 @@ func Touch(path string, now time.Time) error {
 
 // Check returns nil when the heartbeat exists and is younger than maxAge.
 func Check(path string, now time.Time, maxAge time.Duration) error {
+	_, err := CheckState(path, now, maxAge)
+	return err
+}
+
+// CheckState is Check plus the recorded state. A fresh "waiting-token"
+// heartbeat is healthy on purpose: a restart cannot conjure a missing
+// HONEYPOT_TOKEN, so reporting unhealthy would only feed autoheal-style
+// restart loops (see README "Health check").
+func CheckState(path string, now time.Time, maxAge time.Duration) (string, error) {
 	st, err := os.Stat(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return errors.New("no heartbeat yet (waiting for HONEYPOT_TOKEN or listeners not up)")
+		return "", errors.New("no heartbeat yet (sensor starting)")
 	}
 	if err != nil {
-		return err
+		return "", err
 	}
 	age := now.Sub(st.ModTime())
 	if age > maxAge {
-		return fmt.Errorf("heartbeat stale (%s old)", age.Round(time.Second))
+		return "", fmt.Errorf("heartbeat stale (%s old): listeners not accepting or process hung", age.Round(time.Second))
 	}
-	return nil
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	state := StateServing
+	if f := strings.Fields(string(b)); len(f) >= 2 {
+		state = f[1]
+	}
+	return state, nil
 }
 
 // Path honours JARNIS_HEALTH_FILE (tests / custom tmpfs), else DefaultPath.

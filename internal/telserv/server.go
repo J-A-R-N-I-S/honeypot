@@ -25,11 +25,13 @@ const (
 )
 
 type Server struct {
-	Addr     string
-	Banner   func() string
-	Report   func(queue.Event)
-	mu       sync.Mutex
-	listener net.Listener
+	Addr string
+	// WrapListener (optional) wraps the bound listener, e.g. health.Tracker.Wrap.
+	WrapListener func(net.Listener) net.Listener
+	Banner       func() string
+	Report       func(queue.Event)
+	mu           sync.Mutex
+	listener     net.Listener
 }
 
 // Listen opens the TCP listener without accepting yet (see Serve).
@@ -37,6 +39,9 @@ func (s *Server) Listen() error {
 	ln, err := net.Listen("tcp", s.Addr)
 	if err != nil {
 		return err
+	}
+	if s.WrapListener != nil {
+		ln = s.WrapListener(ln)
 	}
 	s.mu.Lock()
 	s.listener = ln
