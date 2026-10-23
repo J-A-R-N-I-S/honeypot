@@ -13,6 +13,12 @@ const (
 	RateInterval = time.Minute
 	// ScanWindow is how long distinct bait-port hits count toward a scan tag.
 	ScanWindow = 60 * time.Second
+	// AttackInterval caps tagged attack events (php2shell, node2shell) per
+	// source IP + attack + kind. Attacks bypass the per-minute connection cap
+	// but must not be a queue-flood primitive (GET /_next/x is trivial).
+	AttackInterval = 10 * time.Second
+	// AttackMapMax bounds the attack limiter's memory across many source IPs.
+	AttackMapMax = 4096
 )
 
 type hit struct {
@@ -27,6 +33,7 @@ type Tracker struct {
 	now  func() time.Time
 	last map[string]time.Time // ip\x00service → last connection/scan emit
 	hits map[string][]hit     // ip → recent distinct service hits (first-seen order)
+	atk  map[string]time.Time // ip\x00attack\x00kind → last attack emit (bounded)
 }
 
 func New() *Tracker {
@@ -41,6 +48,7 @@ func NewWithClock(now func() time.Time) *Tracker {
 		now:  now,
 		last: make(map[string]time.Time),
 		hits: make(map[string][]hit),
+		atk:  make(map[string]time.Time),
 	}
 }
 
@@ -48,12 +56,43 @@ func rateKey(ip, service string) string {
 	return ip + "\x00" + service
 }
 
-func php2shellEvent(ev queue.Event) bool {
+// attackKey returns the limiter key for a tagged attack event, or "".
+func attackKey(ev queue.Event) string {
 	if ev.Raw == nil {
-		return false
+		return ""
 	}
 	v, _ := ev.Raw["attack"].(string)
-	return v != "" // php2shell, node2shell, ...
+	if v == "" {
+		return ""
+	}
+	k, _ := ev.Raw["attack_kind"].(string)
+	return ev.SourceIP + "\x00" + v + "\x00" + k
+}
+
+// allowAttack applies AttackInterval per key. Caller holds t.mu. When the map
+// is full, expired entries are purged first, then the oldest entry is evicted.
+func (t *Tracker) allowAttack(key string, now time.Time) bool {
+	if last, ok := t.atk[key]; ok && now.Sub(last) < AttackInterval {
+		return false
+	}
+	if _, ok := t.atk[key]; !ok && len(t.atk) >= AttackMapMax {
+		for k, at := range t.atk {
+			if now.Sub(at) >= AttackInterval {
+				delete(t.atk, k)
+			}
+		}
+		if len(t.atk) >= AttackMapMax {
+			oldK, oldT := "", now
+			for k, at := range t.atk {
+				if oldK == "" || at.Before(oldT) {
+					oldK, oldT = k, at
+				}
+			}
+			delete(t.atk, oldK)
+		}
+	}
+	t.atk[key] = now
+	return true
 }
 
 // Report wraps sink so servers keep calling func(queue.Event).
@@ -77,7 +116,13 @@ func (t *Tracker) Report(sink func(queue.Event)) func(queue.Event) {
 func (t *Tracker) Observe(ev queue.Event) []queue.Event {
 	// A tagged upload-progress attempt must not disappear behind the
 	// per-minute connection cap, and its summary must stay intact.
-	if php2shellEvent(ev) {
+	if key := attackKey(ev); key != "" {
+		t.mu.Lock()
+		ok := t.allowAttack(key, t.now())
+		t.mu.Unlock()
+		if !ok {
+			return nil
+		}
 		if ev.EventType == "" {
 			ev.EventType = "connection"
 		}

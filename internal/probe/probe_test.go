@@ -1,6 +1,7 @@
 package probe
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -198,7 +199,11 @@ func TestPHP2ShellSkipsRateLimit(t *testing.T) {
 	if got[0].Raw["attack"] != "php2shell" {
 		t.Fatalf("raw %+v", got[0].Raw)
 	}
-	now = start.Add(2 * time.Second)
+	now = start.Add(5 * time.Second)
+	if dup := tr.Observe(tagged); len(dup) != 0 {
+		t.Fatalf("burst within AttackInterval must drop: %+v", dup)
+	}
+	now = start.Add(time.Second + AttackInterval)
 	again := tr.Observe(tagged)
 	if len(again) != 1 || again[0].Summary != "PHP2Shell probe" {
 		t.Fatalf("second tagged attempt %+v", again)
@@ -224,13 +229,53 @@ func typesOf(evs []queue.Event) []string {
 	return out
 }
 
-func TestNode2ShellSkipsRateLimit(t *testing.T) {
-	tr := New()
-	ev := queue.Event{Service: "http", SourceIP: "203.0.113.9", EventType: "connection", Summary: "Node2Shell probe (rsc)",
-		Raw: map[string]any{"attack": "node2shell", "attack_kind": "rsc"}}
-	for i := 0; i < 5; i++ {
-		if got := tr.Observe(ev); len(got) != 1 || got[0].Summary != "Node2Shell probe (rsc)" {
-			t.Fatalf("iter %d: %+v", i, got)
+func n2sEv(ip, kind string) queue.Event {
+	return queue.Event{Service: "http", SourceIP: ip, EventType: "connection", Summary: "Node2Shell probe (" + kind + ")",
+		Raw: map[string]any{"attack": "node2shell", "attack_kind": kind}}
+}
+
+func TestAttackLimiter(t *testing.T) {
+	start := time.Date(2026, 10, 23, 12, 0, 0, 0, time.UTC)
+	now := start
+	tr := NewWithClock(func() time.Time { return now })
+	// connection cap does not swallow the first attack
+	_ = tr.Observe(queue.Event{Service: "http", SourceIP: "203.0.113.9", EventType: "connection"})
+	if got := tr.Observe(n2sEv("203.0.113.9", "probe")); len(got) != 1 || got[0].Summary != "Node2Shell probe (probe)" {
+		t.Fatalf("first: %+v", got)
+	}
+	for i := 0; i < 50; i++ {
+		now = start.Add(time.Duration(i) * 100 * time.Millisecond)
+		if got := tr.Observe(n2sEv("203.0.113.9", "probe")); len(got) != 0 {
+			t.Fatalf("burst %d passed", i)
 		}
+	}
+	if len(tr.Observe(n2sEv("203.0.113.9", "rce"))) != 1 {
+		t.Fatal("other kind blocked")
+	}
+	if len(tr.Observe(n2sEv("203.0.113.10", "probe"))) != 1 {
+		t.Fatal("other IP blocked")
+	}
+	now = start.Add(AttackInterval)
+	if len(tr.Observe(n2sEv("203.0.113.9", "probe"))) != 1 {
+		t.Fatal("after window blocked")
+	}
+}
+
+func TestAttackLimiterBounded(t *testing.T) {
+	start := time.Date(2026, 10, 23, 12, 0, 0, 0, time.UTC)
+	now := start
+	tr := NewWithClock(func() time.Time { return now })
+	for i := 0; i < AttackMapMax*3; i++ {
+		ip := fmt.Sprintf("10.%d.%d.%d", i>>16&255, i>>8&255, i&255)
+		if len(tr.Observe(n2sEv(ip, "probe"))) != 1 {
+			t.Fatalf("new ip %s dropped", ip)
+		}
+		if len(tr.atk) > AttackMapMax {
+			t.Fatalf("map grew to %d", len(tr.atk))
+		}
+	}
+	now = start.Add(AttackInterval)
+	if len(tr.Observe(n2sEv("192.0.2.1", "rce"))) != 1 || len(tr.atk) > AttackMapMax {
+		t.Fatalf("after expiry: %d", len(tr.atk))
 	}
 }
