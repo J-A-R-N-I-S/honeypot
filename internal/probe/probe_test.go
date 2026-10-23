@@ -223,3 +223,14 @@ func typesOf(evs []queue.Event) []string {
 	}
 	return out
 }
+
+func TestNode2ShellSkipsRateLimit(t *testing.T) {
+	tr := New()
+	ev := queue.Event{Service: "http", SourceIP: "203.0.113.9", EventType: "connection", Summary: "Node2Shell probe (rsc)",
+		Raw: map[string]any{"attack": "node2shell", "attack_kind": "rsc"}}
+	for i := 0; i < 5; i++ {
+		if got := tr.Observe(ev); len(got) != 1 || got[0].Summary != "Node2Shell probe (rsc)" {
+			t.Fatalf("iter %d: %+v", i, got)
+		}
+	}
+}

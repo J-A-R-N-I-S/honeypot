@@ -119,12 +119,18 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	var posted []byte
 	if allowed && r.Method == http.MethodPost {
 		posted = readLimitedPost(r)
+	} else if r.Method == http.MethodPut {
+		posted = readLimitedBody(r)
 	}
 	user, pass := "", ""
 	if allowed {
 		user, pass = extractCreds(r)
 	}
 	attack := php2shellAttempt(r, posted)
+	nodeKind := ""
+	if !attack { // php2shell takes precedence
+		nodeKind = node2shellAttempt(r, posted)
+	}
 
 	if s.Report != nil {
 		raw := map[string]any{"path": r.URL.Path, "method": r.Method}
@@ -134,6 +140,10 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 			raw["attack"] = "php2shell"
 			loginSummary = "PHP2Shell probe"
 			connSummary = "PHP2Shell probe"
+		} else if nodeKind != "" {
+			node2shellFields(raw, r, nodeKind, posted)
+			loginSummary = "Node2Shell probe (" + nodeKind + ")"
+			connSummary = loginSummary
 		}
 		if user != "" || pass != "" {
 			s.Report(queue.Event{
@@ -160,7 +170,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	logHit(src, r, user, pass, attack)
+	logHit(src, r, user, pass, attack, nodeKind)
 
 	if !allowed {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -298,12 +308,14 @@ func Escape(s string) string { return html.EscapeString(s) }
 // requests with credentials were logged, so PHP2Shell probes and plain hits
 // were reported to JARNIS but invisible in `docker logs`. Never logs the
 // password; path and user agent are quoted and clipped.
-func logHit(src string, r *http.Request, user, pass string, attack bool) {
+func logHit(src string, r *http.Request, user, pass string, attack bool, nodeKind string) {
 	path := clip(r.URL.Path, 200)
 	ua := clip(r.UserAgent(), 120)
 	switch {
 	case attack:
 		jarnis.Logf("http php2shell probe %s %s path=%q ua=%q", src, r.Method, path, ua)
+	case nodeKind != "":
+		jarnis.Logf("http node2shell probe kind=%s %s %s path=%q ua=%q", nodeKind, src, r.Method, path, ua)
 	case user != "" || pass != "":
 		jarnis.Logf("http capture %s user=%q path=%q (denied)", src, clip(user, 64), path) // L1: user clipped to 64
 	default:

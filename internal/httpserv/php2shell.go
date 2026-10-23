@@ -20,6 +20,14 @@ func readLimitedPost(r *http.Request) []byte {
 	if r == nil || r.Body == nil || r.Method != http.MethodPost {
 		return nil
 	}
+	return readLimitedBody(r)
+}
+
+// readLimitedBody is readLimitedPost without the method check (used for PUT).
+func readLimitedBody(r *http.Request) []byte {
+	if r == nil || r.Body == nil {
+		return nil
+	}
 	r.Body = http.MaxBytesReader(nil, r.Body, postBodyLimit)
 	buf, _ := io.ReadAll(r.Body)
 	r.Body = io.NopCloser(bytes.NewReader(buf))

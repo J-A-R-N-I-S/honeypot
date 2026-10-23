@@ -53,7 +53,7 @@ func php2shellEvent(ev queue.Event) bool {
 		return false
 	}
 	v, _ := ev.Raw["attack"].(string)
-	return v == "php2shell"
+	return v != "" // php2shell, node2shell, ...
 }
 
 // Report wraps sink so servers keep calling func(queue.Event).
