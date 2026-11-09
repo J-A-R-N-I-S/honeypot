@@ -26,17 +26,17 @@ var Version = "0.1"
 // It is NOT host or Docker daemon uptime: a container recreate or process
 // restart resets it. For the typical single-process honeypot image,
 // process start ≈ container start. We never read /proc/uptime.
-var processStartedAt time.Time
+//
+// Stored as plain time.Now() so it keeps Go's monotonic clock reading:
+// uptime is measured with time.Since() on the monotonic clock and is not
+// distorted by NTP steps after container start (typical right after a VPS
+// boot). .UTC() strips the monotonic reading, so it is applied only when
+// formatting the wall-clock start for output (Seniba honeypot#26 F1).
+var processStartedAt = time.Now()
 
-func init() {
-	processStartedAt = time.Now().UTC()
-}
-
-// ProcessStartedAt returns when THIS Go process started (UTC).
+// ProcessStartedAt returns when THIS Go process started (wall clock, UTC).
+// Output only; use ProcessUptimeSeconds for durations.
 func ProcessStartedAt() time.Time {
-	if processStartedAt.IsZero() {
-		processStartedAt = time.Now().UTC()
-	}
 	return processStartedAt.UTC()
 }
 
@@ -45,10 +45,15 @@ func ProcessStartedAtRFC3339() string {
 	return ProcessStartedAt().Format(time.RFC3339)
 }
 
-// ProcessUptimeSeconds is seconds since THIS Go process started (uptime_seconds).
+// ProcessUptimeSeconds is seconds since THIS Go process started (uptime_seconds),
+// measured on the monotonic clock (immune to wall-clock / NTP jumps).
 // Never reads /proc/uptime (host/container wall uptime would be a different field).
 func ProcessUptimeSeconds() int {
-	sec := int(time.Since(ProcessStartedAt()).Seconds())
+	return uptimeSince(processStartedAt)
+}
+
+func uptimeSince(start time.Time) int {
+	sec := int(time.Since(start).Seconds())
 	if sec < 0 {
 		return 0
 	}
