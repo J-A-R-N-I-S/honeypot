@@ -13,6 +13,7 @@ type stubHost struct {
 	t     *testing.T
 	state string
 	bin   string
+	shell string // interpreter for the updater; "" = sh
 }
 
 func newStubHost(t *testing.T) *stubHost {
@@ -71,7 +72,11 @@ func (h *stubHost) field(id, f string) string {
 // run executes the updater against the stub; returns exit code and output.
 func (h *stubHost) run(extraEnv ...string) (int, string) {
 	h.t.Helper()
-	cmd := exec.Command("sh", "jarnis-honeypot-update.sh")
+	shell := h.shell
+	if shell == "" {
+		shell = "sh"
+	}
+	cmd := exec.Command(shell, "jarnis-honeypot-update.sh")
 	cmd.Env = append([]string{
 		"PATH=" + h.bin + string(os.PathListSeparator) + os.Getenv("PATH"),
 		"STUB_STATE=" + h.state,

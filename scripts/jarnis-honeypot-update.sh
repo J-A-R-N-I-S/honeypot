@@ -300,6 +300,27 @@ logdrv|{{.HostConfig.LogConfig.Type}}
       '
 }
 
+# Effective log driver of the recreated container: the explicit --log-driver
+# carried from the old container (carried_options prints it only when it
+# differs from the daemon default), otherwise the daemon default.
+# $1 = carried options (one flag per line), $2 = daemon default driver.
+effective_log_driver() {
+    eld=$(printf '%s\n' "$1" | sed -n 's/^--log-driver //p' | tail -n 1)
+    [ -n "$eld" ] || eld=$2
+    printf '%s' "$eld"
+}
+
+# Succeeds when the compose log defaults (max-size=10m, max-file=3) must be
+# added: no carried --log-opt line and the effective driver is json-file.
+# An unknown driver (daemon query failed, nothing carried) is left alone.
+log_defaults_needed() {
+    if printf '%s\n' "$1" | grep -q '^--log-opt '; then
+        return 1
+    fi
+    ldn_daemon=$(docker info --format '{{.LoggingDriver}}' 2>/dev/null || true)
+    [ "$(effective_log_driver "$1" "$ldn_daemon")" = json-file ]
+}
+
 # Labels set on the container (not inherited from its image) as a label file.
 # com.jarnis.honeypot is always set by recreate itself; com.docker.compose.*
 # labels are dropped (the recreated container is not managed by compose).
@@ -363,14 +384,17 @@ recreate() {
         return 2
     fi
     # Log limits: hardening always enforces memory/cpu/…, but log opts were only
-    # carried from the old container. If it had none, apply compose defaults so
-    # recreated sensors do not grow unbounded json-file logs (Seniba).
-    case " $opts " in
-        *" --log-opt "*) ;;
-        *)
-            opts="$opts --log-driver json-file --log-opt max-size=10m --log-opt max-file=3"
-            ;;
-    esac
+    # carried from the old container. If it had none AND its effective driver
+    # is json-file, apply the compose defaults so recreated sensors do not grow
+    # unbounded json-file logs (Seniba). `opts` holds one flag per LINE, so the
+    # check is line-anchored (Seniba gate 2026-11-09 F1). Any carried
+    # --log-opt, and any other driver (local, journald, syslog, none, …), is
+    # left exactly as it was.
+    if log_defaults_needed "$opts"; then
+        opts="$opts
+--log-opt max-size=10m
+--log-opt max-file=3"
+    fi
     labelf="$WORKDIR/labels"
     if ! container_labels "$cid" "$labelf"; then
         log "skip $cname — docker inspect (labels) failed"
