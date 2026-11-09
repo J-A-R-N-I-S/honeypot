@@ -22,20 +22,33 @@ import (
 // Version is the image/build id (ldflags). Old binaries stay "0.1".
 var Version = "0.1"
 
-// processStartedAt is this Go process start time (not Docker/host uptime).
+// processStartedAt is this Go process start time.
+// It is NOT host or Docker daemon uptime: a container recreate or process
+// restart resets it. For the typical single-process honeypot image,
+// process start ≈ container start. We never read /proc/uptime.
 var processStartedAt time.Time
 
 func init() {
-	processStartedAt = time.Now()
+	processStartedAt = time.Now().UTC()
 }
 
-// ProcessUptimeSeconds is seconds since THIS Go process started.
-// Never reads /proc/uptime.
-func ProcessUptimeSeconds() int {
+// ProcessStartedAt returns when THIS Go process started (UTC).
+func ProcessStartedAt() time.Time {
 	if processStartedAt.IsZero() {
-		processStartedAt = time.Now()
+		processStartedAt = time.Now().UTC()
 	}
-	sec := int(time.Since(processStartedAt).Seconds())
+	return processStartedAt.UTC()
+}
+
+// ProcessStartedAtRFC3339 is ProcessStartedAt as RFC3339 UTC (boot_time / process_started_at).
+func ProcessStartedAtRFC3339() string {
+	return ProcessStartedAt().Format(time.RFC3339)
+}
+
+// ProcessUptimeSeconds is seconds since THIS Go process started (uptime_seconds).
+// Never reads /proc/uptime (host/container wall uptime would be a different field).
+func ProcessUptimeSeconds() int {
+	sec := int(time.Since(ProcessStartedAt()).Seconds())
 	if sec < 0 {
 		return 0
 	}
@@ -253,7 +266,13 @@ func (c *Client) FetchConfig() (*Config, error) {
 	if ip := refreshPublicIP(); ip != "" {
 		q.Set("publicIp", ip)
 	}
+	// Process uptime (not host/Docker daemon uptime). Optional on the Hub:
+	// older Hub builds ignore unknown query keys; newer ones store boot time
+	// and detect restarts when processStartedAt / bootTime changes.
 	q.Set("uptimeSeconds", strconv.Itoa(ProcessUptimeSeconds()))
+	started := ProcessStartedAtRFC3339()
+	q.Set("bootTime", started)
+	q.Set("processStartedAt", started)
 	u.RawQuery = q.Encode()
 	req, err := http.NewRequest(http.MethodGet, u.String(), nil)
 	if err != nil {

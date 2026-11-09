@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"testing"
+	"time"
 )
 
 func TestFetchAndPost(t *testing.T) {
@@ -34,6 +35,15 @@ func TestFetchAndPost(t *testing.T) {
 			t.Error("uptimeSeconds query param missing")
 		} else if n, err := strconv.Atoi(uptimeStr); err != nil || n < 0 {
 			t.Errorf("uptimeSeconds=%q want non-empty integer >= 0", uptimeStr)
+		}
+		boot := r.URL.Query().Get("bootTime")
+		started := r.URL.Query().Get("processStartedAt")
+		if boot == "" || started == "" {
+			t.Errorf("bootTime=%q processStartedAt=%q want both set", boot, started)
+		} else if boot != started {
+			t.Errorf("bootTime=%q != processStartedAt=%q", boot, started)
+		} else if _, err := time.Parse(time.RFC3339, boot); err != nil {
+			t.Errorf("bootTime=%q not RFC3339: %v", boot, err)
 		}
 		_ = json.NewEncoder(w).Encode(Config{OK: true, HoneypotID: "hp_1", Name: "t", UpdateIntervalSeconds: 60})
 	})
