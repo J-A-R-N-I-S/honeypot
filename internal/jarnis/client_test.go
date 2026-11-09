@@ -54,3 +54,23 @@ func TestProcessStartedAtRFC3339(t *testing.T) {
 		}
 	}
 }
+
+// Seniba honeypot#26 F1: the stored start keeps the monotonic clock reading
+// (uptime immune to NTP steps); only the output value is converted to UTC.
+func TestProcessStartKeepsMonotonicClock(t *testing.T) {
+	if !strings.Contains(processStartedAt.String(), " m=") {
+		t.Fatalf("processStartedAt lost its monotonic reading: %s", processStartedAt.String())
+	}
+	if out := ProcessStartedAt(); out.Location() != time.UTC || strings.Contains(out.String(), " m=") {
+		t.Fatalf("ProcessStartedAt() must be wall-clock UTC for output, got %s", out.String())
+	}
+	// time.Add keeps the monotonic reading, so the difference is measured on it.
+	start := time.Now().Add(-90 * time.Second)
+	if got := uptimeSince(start); got < 89 || got > 92 {
+		t.Fatalf("uptimeSince(now-90s)=%d want ~90", got)
+	}
+	// A start in the future (should not happen) never yields a negative uptime.
+	if got := uptimeSince(time.Now().Add(time.Hour)); got != 0 {
+		t.Fatalf("uptimeSince(future)=%d want 0", got)
+	}
+}
