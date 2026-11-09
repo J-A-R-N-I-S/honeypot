@@ -10,7 +10,9 @@
 #
 # Carried over from the old container (docker inspect):
 #   env (incl. HONEYPOT_TOKEN), published ports (tcp/udp, host IP incl. IPv6),
-#   volumes and bind mounts (ro/rw), network mode, labels, log driver/options,
+#   volumes and bind mounts (ro/rw), network mode, labels, log driver/options
+#   (if the old container had no log-opt, defaults match docker-compose.yml:
+#   json-file max-size=10m max-file=3),
 #   hostname/domainname (if set explicitly), --dns/--dns-search/--dns-option,
 #   --add-host.
 # Always set to the hardened defaults (not carried over):
@@ -360,6 +362,15 @@ recreate() {
         log "skip $cname — network/log/DNS option with whitespace not supported by the updater"
         return 2
     fi
+    # Log limits: hardening always enforces memory/cpu/…, but log opts were only
+    # carried from the old container. If it had none, apply compose defaults so
+    # recreated sensors do not grow unbounded json-file logs (Seniba).
+    case " $opts " in
+        *" --log-opt "*) ;;
+        *)
+            opts="$opts --log-driver json-file --log-opt max-size=10m --log-opt max-file=3"
+            ;;
+    esac
     labelf="$WORKDIR/labels"
     if ! container_labels "$cid" "$labelf"; then
         log "skip $cname — docker inspect (labels) failed"
