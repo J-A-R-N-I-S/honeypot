@@ -227,7 +227,9 @@ Do **not** mount `docker.sock` into the honeypot. Do **not** run Watchtower in o
 - **Exit status**: `1` if any recreate failed or a honeypot container with the current image is not running (systemd shows the unit as failed), `0` otherwise. **A sensor you stopped on purpose therefore makes the daily run fail** until you start or remove it — or set `ALLOW_STOPPED=1` in `/etc/jarnis-honeypot-update.conf`, which turns this into a warning. The updater never starts a stopped sensor itself: when a new image is out, a stopped sensor is recreated onto it but left stopped (created, not started, no health gate); that run counts it as updated, and later runs apply the `ALLOW_STOPPED` rule above. Containers skipped by policy (no published ports, no token, unsupported mount path/option) are logged and do not fail the run.
 - **Compose**: `com.docker.compose.*` labels are not carried over, so after an update a compose-managed sensor is a plain container. For compose installs prefer `docker compose pull && docker compose up -d`; if the host updater already replaced the container, `docker rm -f` it before the next `docker compose up -d` (the state volume is kept).
 
-Daily including weekends (sensors do not sleep). systemd timer at 04:20 host time; cron fallback if there is no systemd.
+Daily including weekends (sensors do not sleep). systemd timer at 04:20 host time; cron fallback if there is no systemd. Both schedules use the **host timezone**: the cron line `20 4` (see below) and `OnCalendar=*-*-* 04:20:00` fire at 04:20 on the VPS clock. A host set to UTC therefore updates at 05:20 Europe/Vienna in winter (UTC+1) and 06:20 in summer (UTC+2).
+
+`jarnis-honeypot-update --help` (or `-h`) prints usage and exits 0 without any Docker or network action. Unknown arguments or positionals print a message on stderr and exit 2, also with no action. `--dry-run` inspects matching containers and prints what a real run would do, but does not pull or recreate. Only the CLI flag is honored: a `DRY_RUN` value in the conf file or the environment does not switch a cron or timer run to inspect-only.
 
 ### VPS (systemd, preferred)
 
@@ -239,7 +241,7 @@ for f in jarnis-honeypot-update.sh jarnis-honeypot-update.service jarnis-honeypo
   curl -fsSL "https://jarnis.io/guides/$f" -o "$f"
 done
 cat > SHA256SUMS <<'EOF'
-8017615f640b85447ee1e83e4eaedbc191633e504c16cb86c738b2b1f01a5bcd  jarnis-honeypot-update.sh
+4a6951382267586225129d65cff6b0f57d0c780d35fe68a36bca9e4b1af16808  jarnis-honeypot-update.sh
 d3d16961a46f16b432bd5f58e29a3f1bc50225e0a2ebb166a7c0bde73da56baa  jarnis-honeypot-update.service
 04453fcb41355927022705b881f0ad145750f10cd3d8b4fb28103d8166e4e03c  jarnis-honeypot-update.timer
 EOF
@@ -258,15 +260,18 @@ The sums are for the files in this repository (`scripts/jarnis-honeypot-update.s
 
 **What the checksum protects against:** the sums printed in the jarnis.io guides come from the same server as the files, so on their own they only catch transfer errors and truncated downloads — not a compromised website. Compare the sums with **this README on GitHub** (https://github.com/J-A-R-N-I-S/honeypot#vps-systemd-preferred) before you install. Future work: publish a signed `SHA256SUMS` with each release tag.
 
-Cron fallback (no systemd):
+Cron fallback (no systemd). The `20 4` is host local time, as above. To pin Europe/Vienna without changing the host timezone, you can set `CRON_TZ` in the cron file (this is a suggestion only; the install line itself is unchanged):
 
 ```bash
 echo '20 4 * * * root /usr/local/sbin/jarnis-honeypot-update' > /etc/cron.d/jarnis-honeypot-update
+# Optional, to run at 04:20 Vienna time even on a UTC host:
+#   CRON_TZ=Europe/Vienna
+#   20 4 * * * root /usr/local/sbin/jarnis-honeypot-update
 ```
 
 Disable: `systemctl disable --now jarnis-honeypot-update.timer` (and `rm -f /etc/cron.d/jarnis-honeypot-update` if you used cron).
 
-Optional `/etc/jarnis-honeypot-update.conf`: `NAME` (pin one container; default is every matching honeypot on the host), `IMAGE` (default `jarnis/honeypot:latest`), `ENV_FILE` (used only when `NAME` is set; default `/root/jarnis-honeypot.env`), `HEALTH_WAIT` (seconds the new container must stay up before the old one is removed; default `8`, minimum `3`), `ALLOW_STOPPED` (default `0`; `1` = a stopped sensor with the current image is only a warning), `LOCK_FILE` (default `/run/jarnis-honeypot-update.lock`; a non-root member of the `docker` group running the script by hand cannot create that file and needs e.g. `LOCK_FILE=$XDG_RUNTIME_DIR/jarnis-honeypot-update.lock`). Without `NAME`, each container keeps its own env from inspect. The script never prints the env file or token.
+Optional `/etc/jarnis-honeypot-update.conf`: `NAME` (pin one container; default is every matching honeypot on the host), `IMAGE` (default `jarnis/honeypot:latest`), `ENV_FILE` (used only when `NAME` is set; default `/root/jarnis-honeypot.env`), `HEALTH_WAIT` (seconds the new container must stay up before the old one is removed; default `8`, minimum `3`), `ALLOW_STOPPED` (default `0`; `1` = a stopped sensor with the current image is only a warning), `LOCK_FILE` (default `/run/jarnis-honeypot-update.lock`; a non-root member of the `docker` group running the script by hand cannot create that file and needs e.g. `LOCK_FILE=$XDG_RUNTIME_DIR/jarnis-honeypot-update.lock`), `LOG_FILE` (default `/var/log/jarnis-honeypot-update.log`; every run — cron, systemd timer, or manual — appends a start and end line in UTC with the trigger, the old and new image digests, and the result; set it empty to disable; a symlink is refused — logging is skipped with a warning, the update itself continues; no tokens or secrets are written), `UPDATE_TRIGGER` (optional `cron`, `timer`, or `manual`; any other value is logged as `unknown`; if unset, a tty is treated as manual, a systemd `INVOCATION_ID` as timer, otherwise cron). Without `NAME`, each container keeps its own env from inspect. The script never prints the env file or token.
 
 ### CI secrets (Hub publish)
 

@@ -38,6 +38,13 @@
 # recreated or skipped by policy; 1 = at least one recreate failed, or a
 # container with the current image is not running (see the log; set
 # ALLOW_STOPPED=1 for sensors that are stopped on purpose).
+# CLI: -h/--help prints usage and exits 0 with no Docker or network action.
+#      Unknown arguments print a message on stderr and exit 2, with no action.
+#      --dry-run shows what a real run would do (inspect only; no pull or recreate).
+# Every run (cron, systemd timer, or manual) appends a start and end line to
+# $LOG_FILE (default /var/log/jarnis-honeypot-update.log): UTC time with Z,
+# trigger (cron/timer/manual), old and new image digests, and the result.
+# No tokens or secrets are written to the log.
 # A container that a failed `docker create` left behind is recognised by the
 # unique com.jarnis.update-run label of that attempt and removed on rollback.
 # com.docker.compose.* labels are not carried over: after an update a
@@ -50,6 +57,14 @@
 # Cron fallback (no systemd):
 #   echo '20 4 * * * root /usr/local/sbin/jarnis-honeypot-update' > /etc/cron.d/jarnis-honeypot-update
 #
+# The "20 4" is host local time (crontab(5)). A host set to UTC therefore
+# runs at 05:20 Europe/Vienna in winter (UTC+1) and 06:20 in summer (UTC+2).
+# To pin Vienna time without changing the host timezone, set CRON_TZ in the
+# cron file (suggested only; the install snippet above is unchanged):
+#   CRON_TZ=Europe/Vienna
+#   20 4 * * * root /usr/local/sbin/jarnis-honeypot-update
+# The systemd timer OnCalendar=*-*-* 04:20:00 is likewise host local time.
+#
 # Disable: systemctl disable --now jarnis-honeypot-update.timer
 #          rm -f /etc/cron.d/jarnis-honeypot-update
 #
@@ -61,6 +76,11 @@
 #   LOCK_FILE=/run/jarnis-honeypot-update.lock
 #   ALLOW_STOPPED=0               # 1: a stopped sensor with the current image
 #                                 # is only a warning (default: run fails)
+#   LOG_FILE=/var/log/jarnis-honeypot-update.log
+#                                 # start/end of every run; empty disables
+#                                 # a symlink is refused (log skipped, run continues)
+#   UPDATE_TRIGGER=cron|timer|manual  # optional; otherwise detected
+#                                 # any other value is logged as "unknown"
 #
 # Running manually as a non-root member of the docker group: /run is not
 # writable, so set a lock file you own, e.g.
@@ -70,6 +90,66 @@ set -eu
 set -f
 # Temp files hold the token / host key: owner-only.
 umask 077
+
+usage() {
+    cat <<'EOF'
+Usage: jarnis-honeypot-update [options]
+
+Pull Docker Hub jarnis/honeypot:latest and recreate matching containers
+whose image digest changed. Unrelated containers are never touched.
+
+Options:
+  -h, --help     Show this help and exit (no Docker or network action)
+  --dry-run      Show what would happen; do not pull or recreate
+
+Configuration is read from /etc/jarnis-honeypot-update.conf and from
+environment variables: IMAGE, NAME, ENV_FILE, HEALTH_WAIT, LOCK_FILE,
+ALLOW_STOPPED, LOG_FILE, UPDATE_TRIGGER. There are no other CLI flags;
+NAME and IMAGE are not accepted as arguments. The script never prints
+tokens or the env file.
+
+The cron schedule "20 4" and the systemd timer 04:20 are host local time.
+A host set to UTC therefore updates at 05:20 Europe/Vienna in winter
+(UTC+1) and 06:20 in summer (UTC+2). To pin Vienna time in cron without
+changing the host timezone, add CRON_TZ=Europe/Vienna to the cron file.
+
+Every run appends a start and end line to LOG_FILE (default
+/var/log/jarnis-honeypot-update.log).
+EOF
+}
+
+CLI_DRY_RUN=0
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        --dry-run)
+            CLI_DRY_RUN=1
+            shift
+            ;;
+        --)
+            shift
+            if [ $# -gt 0 ]; then
+                echo "jarnis-honeypot-update: unexpected argument: $1" >&2
+                echo "Try 'jarnis-honeypot-update --help' for usage." >&2
+                exit 2
+            fi
+            break
+            ;;
+        -*)
+            echo "jarnis-honeypot-update: unknown option: $1" >&2
+            echo "Try 'jarnis-honeypot-update --help' for usage." >&2
+            exit 2
+            ;;
+        *)
+            echo "jarnis-honeypot-update: unexpected argument: $1" >&2
+            echo "Try 'jarnis-honeypot-update --help' for usage." >&2
+            exit 2
+            ;;
+    esac
+done
 
 CONF=/etc/jarnis-honeypot-update.conf
 if [ -f "$CONF" ]; then
@@ -83,8 +163,87 @@ HEALTH_WAIT=${HEALTH_WAIT:-8}
 LOCK_FILE=${LOCK_FILE:-/run/jarnis-honeypot-update.lock}
 ALLOW_STOPPED=${ALLOW_STOPPED:-0}
 STATE_DIR=/var/lib/jarnis-honeypot
+# Only the --dry-run CLI flag is honored. A DRY_RUN value in the conf
+# or environment must not turn a cron or timer run into inspect-only.
+DRY_RUN=$CLI_DRY_RUN
+# Empty LOG_FILE disables the run log. Default path matches the file already
+# used on hosts that redirect cron stdout there.
+if [ "${LOG_FILE+set}" != set ]; then
+    LOG_FILE=/var/log/jarnis-honeypot-update.log
+    LOG_FILE_EXPLICIT=0
+else
+    LOG_FILE_EXPLICIT=1
+fi
 
 log() { echo "$(date -u +'%Y-%m-%dT%H:%M:%SZ') $*"; }
+
+# Append exactly one line to LOG_FILE. Never call this with tokens or
+# env values. Control characters in the message (CR, LF, and other
+# ASCII controls, e.g. a crafted IMAGE) are stripped so one entry
+# cannot become several lines.
+#
+# A symlink is refused, same check as LOCK_FILE: following it as root
+# could append to an arbitrary file. Unlike LOCK_FILE (a symlink would
+# break mutual exclusion, so the run exits), a bad log path only skips
+# logging; the update itself continues. A symlink always gets a
+# warning, including the default path — that is a misconfiguration,
+# not the unwritable-default case of a non-root manual run, which
+# stays silent. An explicit non-symlink path that cannot be written
+# still warns.
+run_log() {
+    _rl_msg="$(date -u +'%Y-%m-%dT%H:%M:%SZ') $*"
+    _rl_msg=$(printf '%s' "$_rl_msg" | LC_ALL=C tr -d '[:cntrl:]')
+    if [ -z "$LOG_FILE" ] || [ "${LOG_FILE_UNWRITABLE:-0}" = 1 ]; then
+        return 0
+    fi
+    if [ -L "$LOG_FILE" ]; then
+        LOG_FILE_UNWRITABLE=1
+        log "WARNING: refusing to write to $LOG_FILE — it is a symlink"
+        return 0
+    fi
+    if ! printf '%s\n' "$_rl_msg" >> "$LOG_FILE"; then
+        LOG_FILE_UNWRITABLE=1
+        if [ "$LOG_FILE_EXPLICIT" = 1 ]; then
+            log "WARNING: could not write to $LOG_FILE"
+        fi
+    fi
+}
+
+# cron / timer / manual. UPDATE_TRIGGER wins when set, but only those
+# three values are accepted (control characters are stripped first);
+# anything else is logged as "unknown". Otherwise a tty means manual,
+# a systemd invocation id means timer, else cron.
+detect_trigger() {
+    _tr=
+    if [ -n "${UPDATE_TRIGGER:-}" ]; then
+        _tr=$UPDATE_TRIGGER
+    elif [ -t 0 ] || [ -t 1 ]; then
+        _tr=manual
+    elif [ -n "${INVOCATION_ID:-}" ]; then
+        _tr=timer
+    else
+        _tr=cron
+    fi
+    _tr=$(printf '%s' "$_tr" | LC_ALL=C tr -d '[:cntrl:]')
+    case "$_tr" in
+        cron|timer|manual) printf '%s' "$_tr" ;;
+        *) printf 'unknown' ;;
+    esac
+}
+
+TRIGGER=$(detect_trigger)
+RUN_LOGGED=0
+RUN_RESULT=aborted
+OLD_SUMMARY=""
+
+record_old() {
+    # $1 = container name, $2 = image digest. No other fields.
+    if [ -n "$OLD_SUMMARY" ]; then
+        OLD_SUMMARY="$OLD_SUMMARY $1=$2"
+    else
+        OLD_SUMMARY="$1=$2"
+    fi
+}
 
 case "$HEALTH_WAIT" in
     ''|*[!0-9]*) log "HEALTH_WAIT must be a number of seconds (got $HEALTH_WAIT)"; exit 1 ;;
@@ -168,9 +327,14 @@ restore_previous() {
 
 # shellcheck disable=SC2329  # invoked via trap
 cleanup() {
+    _cleanup_rc=$?
     if [ -n "$WORKDIR" ]; then
         rm -rf "$WORKDIR"
     fi
+    if [ "$RUN_LOGGED" = 1 ]; then
+        run_log "end trigger=$TRIGGER new=${NEW:-} old=${OLD_SUMMARY:-} result=$RUN_RESULT exit=$_cleanup_rc"
+    fi
+    return "$_cleanup_rc"
 }
 
 # shellcheck disable=SC2329  # invoked via trap
@@ -182,6 +346,7 @@ on_signal() {
     else
         log "interrupted"
     fi
+    RUN_RESULT="interrupted"
     exit 1
 }
 
@@ -517,13 +682,19 @@ recreate() {
     return 0
 }
 
+RUN_LOGGED=1
+run_log "start trigger=$TRIGGER image=$IMAGE dry_run=$DRY_RUN"
+log "start trigger=$TRIGGER"
+
 if ! command -v docker >/dev/null 2>&1; then
+    RUN_RESULT="docker not found"
     log "docker not found"
     exit 1
 fi
 
 case "$IMAGE" in
     *ghcr.io*)
+        RUN_RESULT="IMAGE not Docker Hub"
         log "IMAGE must be Docker Hub jarnis/honeypot (got $IMAGE)"
         exit 1
         ;;
@@ -535,11 +706,13 @@ esac
 # users). Opened with <> (no truncation); symlinks are refused.
 if command -v flock >/dev/null 2>&1; then
     if [ -L "$LOCK_FILE" ]; then
+        RUN_RESULT="lock is a symlink"
         log "refusing lock file $LOCK_FILE — it is a symlink"
         exit 1
     fi
     exec 9<>"$LOCK_FILE"
     if ! flock -n 9; then
+        RUN_RESULT="lock held"
         log "another jarnis-honeypot-update run holds $LOCK_FILE — exit"
         exit 0
     fi
@@ -549,14 +722,26 @@ fi
 
 WORKDIR=$(mktemp -d "${TMPDIR:-/tmp}/jarnis-hp.XXXXXX")
 
-if ! docker pull "$IMAGE" >/dev/null; then
-    log "pull failed $IMAGE"
-    exit 1
+if [ "$DRY_RUN" = 1 ]; then
+    log "dry-run: not pulling, not recreating"
+    if NEW=$(docker inspect --format '{{.Id}}' "$IMAGE" 2>/dev/null); then
+        log "dry-run: local $IMAGE is $NEW"
+    else
+        NEW=""
+        log "dry-run: $IMAGE is not present locally — a real run would docker pull"
+    fi
+else
+    if ! docker pull "$IMAGE" >/dev/null; then
+        RUN_RESULT="pull failed"
+        log "pull failed $IMAGE"
+        exit 1
+    fi
+    NEW=$(docker inspect --format '{{.Id}}' "$IMAGE")
 fi
-NEW=$(docker inspect --format '{{.Id}}' "$IMAGE")
 
 ids=$(docker ps -aq)
 if [ -z "$ids" ]; then
+    RUN_RESULT="no containers"
     log "no containers — skip"
     exit 0
 fi
@@ -582,6 +767,17 @@ for cid in $ids; do
     fi
     found=$((found + 1))
     old=$(docker inspect --format '{{.Image}}' "$cid")
+    record_old "$cname" "$old"
+    if [ "$DRY_RUN" = 1 ]; then
+        if [ -z "$NEW" ]; then
+            log "dry-run: would pull and recreate $cname (old $old)"
+        elif [ "$old" = "$NEW" ]; then
+            log "dry-run: would leave $cname up to date"
+        else
+            log "dry-run: would recreate $cname ($old -> $NEW)"
+        fi
+        continue
+    fi
     if [ "$old" = "$NEW" ]; then
         # A stopped sensor under the name (e.g. left by a failed restore)
         # must not pass as "up to date": warn and fail the run.
@@ -608,10 +804,17 @@ for cid in $ids; do
 done
 
 if [ "$found" -eq 0 ]; then
+    RUN_RESULT="no JARNIS honeypot containers"
     log "no JARNIS honeypot containers — skip"
     exit 0
 fi
-log "done found=$found updated=$updated skipped=$skipped failed=$failed stopped=$stopped"
+if [ "$DRY_RUN" = 1 ]; then
+    RUN_RESULT="dry-run found=$found"
+    log "dry-run done found=$found"
+    exit 0
+fi
+RUN_RESULT="done found=$found updated=$updated skipped=$skipped failed=$failed stopped=$stopped"
+log "$RUN_RESULT"
 if [ "$failed" -gt 0 ] || [ "$stopped" -gt 0 ]; then
     exit 1
 fi
