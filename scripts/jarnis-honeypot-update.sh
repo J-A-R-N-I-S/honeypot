@@ -10,7 +10,9 @@
 #
 # Carried over from the old container (docker inspect):
 #   env (incl. HONEYPOT_TOKEN), published ports (tcp/udp, host IP incl. IPv6),
-#   volumes and bind mounts (ro/rw), network mode, labels, log driver/options,
+#   volumes and bind mounts (ro/rw), network mode, labels, log driver/options
+#   (if the old container had no log-opt, defaults match docker-compose.yml:
+#   json-file max-size=10m max-file=3),
 #   hostname/domainname (if set explicitly), --dns/--dns-search/--dns-option,
 #   --add-host.
 # Always set to the hardened defaults (not carried over):
@@ -298,6 +300,27 @@ logdrv|{{.HostConfig.LogConfig.Type}}
       '
 }
 
+# Effective log driver of the recreated container: the explicit --log-driver
+# carried from the old container (carried_options prints it only when it
+# differs from the daemon default), otherwise the daemon default.
+# $1 = carried options (one flag per line), $2 = daemon default driver.
+effective_log_driver() {
+    eld=$(printf '%s\n' "$1" | sed -n 's/^--log-driver //p' | tail -n 1)
+    [ -n "$eld" ] || eld=$2
+    printf '%s' "$eld"
+}
+
+# Succeeds when the compose log defaults (max-size=10m, max-file=3) must be
+# added: no carried --log-opt line and the effective driver is json-file.
+# An unknown driver (daemon query failed, nothing carried) is left alone.
+log_defaults_needed() {
+    if printf '%s\n' "$1" | grep -q '^--log-opt '; then
+        return 1
+    fi
+    ldn_daemon=$(docker info --format '{{.LoggingDriver}}' 2>/dev/null || true)
+    [ "$(effective_log_driver "$1" "$ldn_daemon")" = json-file ]
+}
+
 # Labels set on the container (not inherited from its image) as a label file.
 # com.jarnis.honeypot is always set by recreate itself; com.docker.compose.*
 # labels are dropped (the recreated container is not managed by compose).
@@ -359,6 +382,18 @@ recreate() {
     elif [ "$rc" -ne 0 ]; then
         log "skip $cname — network/log/DNS option with whitespace not supported by the updater"
         return 2
+    fi
+    # Log limits: hardening always enforces memory/cpu/…, but log opts were only
+    # carried from the old container. If it had none AND its effective driver
+    # is json-file, apply the compose defaults so recreated sensors do not grow
+    # unbounded json-file logs (Seniba). `opts` holds one flag per LINE, so the
+    # check is line-anchored (Seniba gate 2026-11-09 F1). Any carried
+    # --log-opt, and any other driver (local, journald, syslog, none, …), is
+    # left exactly as it was.
+    if log_defaults_needed "$opts"; then
+        opts="$opts
+--log-opt max-size=10m
+--log-opt max-file=3"
     fi
     labelf="$WORKDIR/labels"
     if ! container_labels "$cid" "$labelf"; then

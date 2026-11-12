@@ -6,6 +6,10 @@
 #                             target name, then fails (half-done create).
 #   STUB_CREATE_FAIL=1        docker create fails cleanly.
 #   STUB_RENAME_FAIL_TO=name  renaming any container to this name fails.
+#   STUB_DAEMON_LOG=driver    `docker info` LoggingDriver (default json-file).
+#   $STUB_STATE/c/<id>/opts   optional net/log option lines for carried_options
+#                             (default: net|bridge + logdrv|json-file).
+# docker create writes its argv (one per line) to $STUB_STATE/c/<new>/create_args.
 set -eu
 S=$STUB_STATE
 echo "$*" >> "$S/calls.log"
@@ -31,7 +35,7 @@ name_taken() {
 cmd=$1; shift
 case "$cmd" in
     pull) exit 0 ;;
-    info) echo json-file; exit 0 ;;
+    info) echo "${STUB_DAEMON_LOG:-json-file}"; exit 0 ;;
     ps)
         want=""
         while [ $# -gt 0 ]; do
@@ -62,7 +66,7 @@ case "$cmd" in
             *PortBindings*) echo "|2222|22/tcp" ;;
             *Config.Env*) printf 'HONEYPOT_TOKEN=hpt_stub\nPATH=/bin\n' ;;
             *Mounts*) echo "volume|jarnis-honeypot-state|/var/lib/jarnis-honeypot|true" ;;
-            net*) printf 'net|bridge\nlogdrv|json-file\n' ;;
+            net*) if [ -f "$d/opts" ]; then cat "$d/opts"; else printf 'net|bridge\nlogdrv|json-file\n'; fi ;;
             *Config.Labels*) echo "com.jarnis.honeypot=1" ;;
             *) echo "stub: unknown format $fmt" >&2; exit 1 ;;
         esac
@@ -85,6 +89,7 @@ case "$cmd" in
         id=$(find_id "$1") || exit 1
         rm -rf "${S:?}/c/$id"; exit 0 ;;
     create)
+        argv=$(printf '%s\n' "$@")
         name=""
         labels=""
         while [ $# -gt 0 ]; do
@@ -104,6 +109,7 @@ case "$cmd" in
         echo "$STUB_NEW_ID" > "$S/c/$id/image"
         echo false > "$S/c/$id/running"
         printf '%s' "$labels" > "$S/c/$id/labels"
+        printf '%s\n' "$argv" > "$S/c/$id/create_args"
         if [ "${STUB_CREATE_FAIL_LEAVE:-0}" = 1 ]; then
             echo "create failed half-way" >&2; exit 1
         fi
