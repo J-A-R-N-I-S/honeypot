@@ -229,7 +229,7 @@ Do **not** mount `docker.sock` into the honeypot. Do **not** run Watchtower in o
 
 Daily including weekends (sensors do not sleep). systemd timer at 04:20 host time; cron fallback if there is no systemd. Both schedules use the **host timezone**: the cron line `20 4` (see below) and `OnCalendar=*-*-* 04:20:00` fire at 04:20 on the VPS clock. A host set to UTC therefore updates at 05:20 Europe/Vienna in winter (UTC+1) and 06:20 in summer (UTC+2).
 
-`jarnis-honeypot-update --help` (or `-h`) prints usage and exits 0 without any Docker or network action. Unknown arguments or positionals print a message on stderr and exit 2, also with no action. `--dry-run` inspects matching containers and prints what a real run would do, but does not pull or recreate.
+`jarnis-honeypot-update --help` (or `-h`) prints usage and exits 0 without any Docker or network action. Unknown arguments or positionals print a message on stderr and exit 2, also with no action. `--dry-run` inspects matching containers and prints what a real run would do, but does not pull or recreate. Only the CLI flag is honored: a `DRY_RUN` value in the conf file or the environment does not switch a cron or timer run to inspect-only.
 
 ### VPS (systemd, preferred)
 
@@ -241,7 +241,7 @@ for f in jarnis-honeypot-update.sh jarnis-honeypot-update.service jarnis-honeypo
   curl -fsSL "https://jarnis.io/guides/$f" -o "$f"
 done
 cat > SHA256SUMS <<'EOF'
-68a6f2d601c38d560d837604049ad6ef59a60956b0f15c2ec45e36d395e2f612  jarnis-honeypot-update.sh
+4a6951382267586225129d65cff6b0f57d0c780d35fe68a36bca9e4b1af16808  jarnis-honeypot-update.sh
 d3d16961a46f16b432bd5f58e29a3f1bc50225e0a2ebb166a7c0bde73da56baa  jarnis-honeypot-update.service
 04453fcb41355927022705b881f0ad145750f10cd3d8b4fb28103d8166e4e03c  jarnis-honeypot-update.timer
 EOF
@@ -271,7 +271,7 @@ echo '20 4 * * * root /usr/local/sbin/jarnis-honeypot-update' > /etc/cron.d/jarn
 
 Disable: `systemctl disable --now jarnis-honeypot-update.timer` (and `rm -f /etc/cron.d/jarnis-honeypot-update` if you used cron).
 
-Optional `/etc/jarnis-honeypot-update.conf`: `NAME` (pin one container; default is every matching honeypot on the host), `IMAGE` (default `jarnis/honeypot:latest`), `ENV_FILE` (used only when `NAME` is set; default `/root/jarnis-honeypot.env`), `HEALTH_WAIT` (seconds the new container must stay up before the old one is removed; default `8`, minimum `3`), `ALLOW_STOPPED` (default `0`; `1` = a stopped sensor with the current image is only a warning), `LOCK_FILE` (default `/run/jarnis-honeypot-update.lock`; a non-root member of the `docker` group running the script by hand cannot create that file and needs e.g. `LOCK_FILE=$XDG_RUNTIME_DIR/jarnis-honeypot-update.lock`), `LOG_FILE` (default `/var/log/jarnis-honeypot-update.log`; every run — cron, systemd timer, or manual — appends a start and end line in UTC with the trigger, the old and new image digests, and the result; set it empty to disable; no tokens or secrets are written), `UPDATE_TRIGGER` (optional `cron`, `timer`, or `manual`; if unset, a tty is treated as manual, a systemd `INVOCATION_ID` as timer, otherwise cron). Without `NAME`, each container keeps its own env from inspect. The script never prints the env file or token.
+Optional `/etc/jarnis-honeypot-update.conf`: `NAME` (pin one container; default is every matching honeypot on the host), `IMAGE` (default `jarnis/honeypot:latest`), `ENV_FILE` (used only when `NAME` is set; default `/root/jarnis-honeypot.env`), `HEALTH_WAIT` (seconds the new container must stay up before the old one is removed; default `8`, minimum `3`), `ALLOW_STOPPED` (default `0`; `1` = a stopped sensor with the current image is only a warning), `LOCK_FILE` (default `/run/jarnis-honeypot-update.lock`; a non-root member of the `docker` group running the script by hand cannot create that file and needs e.g. `LOCK_FILE=$XDG_RUNTIME_DIR/jarnis-honeypot-update.lock`), `LOG_FILE` (default `/var/log/jarnis-honeypot-update.log`; every run — cron, systemd timer, or manual — appends a start and end line in UTC with the trigger, the old and new image digests, and the result; set it empty to disable; a symlink is refused — logging is skipped with a warning, the update itself continues; no tokens or secrets are written), `UPDATE_TRIGGER` (optional `cron`, `timer`, or `manual`; any other value is logged as `unknown`; if unset, a tty is treated as manual, a systemd `INVOCATION_ID` as timer, otherwise cron). Without `NAME`, each container keeps its own env from inspect. The script never prints the env file or token.
 
 ### CI secrets (Hub publish)
 

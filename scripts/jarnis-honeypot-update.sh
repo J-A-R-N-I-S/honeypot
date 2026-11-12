@@ -78,7 +78,9 @@
 #                                 # is only a warning (default: run fails)
 #   LOG_FILE=/var/log/jarnis-honeypot-update.log
 #                                 # start/end of every run; empty disables
+#                                 # a symlink is refused (log skipped, run continues)
 #   UPDATE_TRIGGER=cron|timer|manual  # optional; otherwise detected
+#                                 # any other value is logged as "unknown"
 #
 # Running manually as a non-root member of the docker group: /run is not
 # writable, so set a lock file you own, e.g.
@@ -161,11 +163,9 @@ HEALTH_WAIT=${HEALTH_WAIT:-8}
 LOCK_FILE=${LOCK_FILE:-/run/jarnis-honeypot-update.lock}
 ALLOW_STOPPED=${ALLOW_STOPPED:-0}
 STATE_DIR=/var/lib/jarnis-honeypot
-if [ "$CLI_DRY_RUN" = 1 ]; then
-    DRY_RUN=1
-else
-    DRY_RUN=${DRY_RUN:-0}
-fi
+# Only the --dry-run CLI flag is honored. A DRY_RUN value in the conf
+# or environment must not turn a cron or timer run into inspect-only.
+DRY_RUN=$CLI_DRY_RUN
 # Empty LOG_FILE disables the run log. Default path matches the file already
 # used on hosts that redirect cron stdout there.
 if [ "${LOG_FILE+set}" != set ]; then
@@ -177,12 +177,28 @@ fi
 
 log() { echo "$(date -u +'%Y-%m-%dT%H:%M:%SZ') $*"; }
 
-# Append one line to LOG_FILE. Never call this with tokens or env values.
-# If the default path is not writable (e.g. a non-root manual run), stay
-# silent; warn only when LOG_FILE was set explicitly.
+# Append exactly one line to LOG_FILE. Never call this with tokens or
+# env values. Control characters in the message (CR, LF, and other
+# ASCII controls, e.g. a crafted IMAGE) are stripped so one entry
+# cannot become several lines.
+#
+# A symlink is refused, same check as LOCK_FILE: following it as root
+# could append to an arbitrary file. Unlike LOCK_FILE (a symlink would
+# break mutual exclusion, so the run exits), a bad log path only skips
+# logging; the update itself continues. A symlink always gets a
+# warning, including the default path — that is a misconfiguration,
+# not the unwritable-default case of a non-root manual run, which
+# stays silent. An explicit non-symlink path that cannot be written
+# still warns.
 run_log() {
     _rl_msg="$(date -u +'%Y-%m-%dT%H:%M:%SZ') $*"
+    _rl_msg=$(printf '%s' "$_rl_msg" | LC_ALL=C tr -d '[:cntrl:]')
     if [ -z "$LOG_FILE" ] || [ "${LOG_FILE_UNWRITABLE:-0}" = 1 ]; then
+        return 0
+    fi
+    if [ -L "$LOG_FILE" ]; then
+        LOG_FILE_UNWRITABLE=1
+        log "WARNING: refusing to write to $LOG_FILE — it is a symlink"
         return 0
     fi
     if ! printf '%s\n' "$_rl_msg" >> "$LOG_FILE"; then
@@ -193,22 +209,26 @@ run_log() {
     fi
 }
 
-# cron / timer / manual. UPDATE_TRIGGER wins when set; otherwise a tty
-# means manual, a systemd invocation id means timer, else cron.
+# cron / timer / manual. UPDATE_TRIGGER wins when set, but only those
+# three values are accepted (control characters are stripped first);
+# anything else is logged as "unknown". Otherwise a tty means manual,
+# a systemd invocation id means timer, else cron.
 detect_trigger() {
+    _tr=
     if [ -n "${UPDATE_TRIGGER:-}" ]; then
-        printf '%s' "$UPDATE_TRIGGER"
-        return
+        _tr=$UPDATE_TRIGGER
+    elif [ -t 0 ] || [ -t 1 ]; then
+        _tr=manual
+    elif [ -n "${INVOCATION_ID:-}" ]; then
+        _tr=timer
+    else
+        _tr=cron
     fi
-    if [ -t 0 ] || [ -t 1 ]; then
-        printf 'manual'
-        return
-    fi
-    if [ -n "${INVOCATION_ID:-}" ]; then
-        printf 'timer'
-        return
-    fi
-    printf 'cron'
+    _tr=$(printf '%s' "$_tr" | LC_ALL=C tr -d '[:cntrl:]')
+    case "$_tr" in
+        cron|timer|manual) printf '%s' "$_tr" ;;
+        *) printf 'unknown' ;;
+    esac
 }
 
 TRIGGER=$(detect_trigger)

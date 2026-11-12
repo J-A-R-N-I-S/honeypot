@@ -315,3 +315,193 @@ func TestTriggerEnvAndDefaultNoTtyIsCron(t *testing.T) {
 		t.Fatalf("INVOCATION_ID without UPDATE_TRIGGER should be timer:\n%s", lf)
 	}
 }
+
+func logLines(s string) []string {
+	s = strings.TrimSuffix(s, "\n")
+	if s == "" {
+		return nil
+	}
+	return strings.Split(s, "\n")
+}
+
+func assertSingleLineLog(t *testing.T, lf string) {
+	t.Helper()
+	lines := logLines(lf)
+	if len(lines) == 0 {
+		t.Fatal("run log is empty")
+	}
+	for i, line := range lines {
+		if !utcStamp.MatchString(line+"\n") && !utcStamp.MatchString(line) {
+			t.Fatalf("log line %d is not a UTC-stamped entry:\n%q\nfull:\n%s", i+1, line, lf)
+		}
+		if strings.ContainsAny(line, "\r") {
+			t.Fatalf("log line %d contains CR:\n%q", i+1, line)
+		}
+	}
+}
+
+// N1: a symlink LOG_FILE must not be followed. Logging is skipped with a
+// warning; the update itself still runs.
+func TestLogFileSymlinkIsRefusedButUpdateContinues(t *testing.T) {
+	for _, sh := range argShells(t) {
+		sh := sh
+		t.Run(sh, func(t *testing.T) {
+			h := newStubHost(t)
+			h.addContainer("old1", "jarnis-honeypot", "sha256:old", true)
+			logPath := filepath.Join(h.state, "update.log")
+			target := filepath.Join(h.state, "symlink-target.log")
+			if err := os.WriteFile(target, []byte("preexisting\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(target, logPath); err != nil {
+				t.Fatal(err)
+			}
+			code, out := h.runWith(sh, nil, "UPDATE_TRIGGER=manual")
+			if code != 0 || !strings.Contains(out, "recreated jarnis-honeypot") {
+				t.Fatalf("update must continue; code=%d\n%s", code, out)
+			}
+			if !strings.Contains(out, "it is a symlink") {
+				t.Fatalf("missing symlink warning:\n%s", out)
+			}
+			got, err := os.ReadFile(target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(got) != "preexisting\n" {
+				t.Fatalf("symlink target was written:\n%s", got)
+			}
+			fi, err := os.Lstat(logPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if fi.Mode()&os.ModeSymlink == 0 {
+				t.Fatal("LOG_FILE should remain a symlink")
+			}
+		})
+	}
+}
+
+// N2: UPDATE_TRIGGER is whitelisted to cron|timer|manual (else unknown);
+// IMAGE and trigger values with CR/LF/controls cannot inject extra log lines.
+func TestTriggerWhitelistAndLogInjection(t *testing.T) {
+	for _, sh := range argShells(t) {
+		sh := sh
+		t.Run(sh+"/newline-trigger", func(t *testing.T) {
+			h := newStubHost(t)
+			h.addContainer("c1", "jarnis-honeypot", "sha256:new", true)
+			code, out := h.runWith(sh, nil, "UPDATE_TRIGGER=cron\nINJECTED_TRIGGER")
+			if code != 0 {
+				t.Fatalf("code=%d\n%s", code, out)
+			}
+			lf := h.logFile()
+			assertSingleLineLog(t, lf)
+			if strings.Contains(lf, "INJECTED") {
+				t.Fatalf("injected text must not reach the log:\n%s", lf)
+			}
+			if !strings.Contains(lf, "start trigger=unknown") || !strings.Contains(lf, "end trigger=unknown") {
+				t.Fatalf("newline trigger must become unknown:\n%s", lf)
+			}
+			if len(logLines(lf)) != 2 {
+				t.Fatalf("want start+end only, got %d lines:\n%s", len(logLines(lf)), lf)
+			}
+		})
+		t.Run(sh+"/invalid-trigger", func(t *testing.T) {
+			h := newStubHost(t)
+			h.addContainer("c1", "jarnis-honeypot", "sha256:new", true)
+			code, out := h.runWith(sh, nil, "UPDATE_TRIGGER=evil")
+			if code != 0 {
+				t.Fatalf("code=%d\n%s", code, out)
+			}
+			lf := h.logFile()
+			assertSingleLineLog(t, lf)
+			if !strings.Contains(lf, "start trigger=unknown") || !strings.Contains(lf, "end trigger=unknown") {
+				t.Fatalf("non-whitelist trigger must become unknown:\n%s", lf)
+			}
+		})
+		t.Run(sh+"/cr-trigger", func(t *testing.T) {
+			h := newStubHost(t)
+			h.addContainer("c1", "jarnis-honeypot", "sha256:new", true)
+			code, out := h.runWith(sh, nil, "UPDATE_TRIGGER=manual\r")
+			if code != 0 {
+				t.Fatalf("code=%d\n%s", code, out)
+			}
+			lf := h.logFile()
+			assertSingleLineLog(t, lf)
+			// trailing CR is stripped, so "manual" stays on the whitelist
+			if !strings.Contains(lf, "start trigger=manual") {
+				t.Fatalf("CR-only suffix should still be manual:\n%s", lf)
+			}
+		})
+		t.Run(sh+"/image-newline", func(t *testing.T) {
+			h := newStubHost(t)
+			h.addContainer("c1", "jarnis-honeypot", "sha256:new", true)
+			// IMAGE is also used for docker inspect; a newline makes the
+			// stub miss the image and the run can fail. The start/end log
+			// must still be exactly two single lines with no injection.
+			code, out := h.runWith(sh, nil, "IMAGE=jarnis/honeypot:latest\nINJECTED start trigger=forged", "UPDATE_TRIGGER=cron")
+			_ = code
+			_ = out
+			lf := h.logFile()
+			assertSingleLineLog(t, lf)
+			if len(logLines(lf)) != 2 {
+				t.Fatalf("want start+end only, got %d lines:\n%s", len(logLines(lf)), lf)
+			}
+			for _, line := range logLines(lf) {
+				if !strings.HasPrefix(line[:len("2026-11-12T00:00:00Z ")], "2") && !utcStamp.MatchString(line) {
+					t.Fatalf("injected line without timestamp:\n%q\n%s", line, lf)
+				}
+			}
+			// Newlines are gone, so any leftover injected text sits on the
+			// same start line; it must not appear as a new log record.
+			if strings.Contains(lf, "\nINJECTED") || strings.Contains(lf, "\nstart trigger=forged") {
+				t.Fatalf("IMAGE newline injected a second line:\n%s", lf)
+			}
+			if !strings.Contains(lf, "start trigger=cron") {
+				t.Fatalf("trigger must stay cron (from UPDATE_TRIGGER):\n%s", lf)
+			}
+		})
+	}
+}
+
+// N3: DRY_RUN from the environment (or conf) without --dry-run must not
+// skip pull/recreate. The CLI flag still wins when present.
+func TestEnvDryRunIgnoredWithoutFlag(t *testing.T) {
+	for _, sh := range argShells(t) {
+		sh := sh
+		t.Run(sh+"/env-only", func(t *testing.T) {
+			h := newStubHost(t)
+			h.addContainer("old1", "jarnis-honeypot", "sha256:old", true)
+			code, out := h.runWith(sh, nil, "DRY_RUN=1", "UPDATE_TRIGGER=cron")
+			if code != 0 || !strings.Contains(out, "recreated jarnis-honeypot") {
+				t.Fatalf("env DRY_RUN=1 must not dry-run; code=%d\n%s", code, out)
+			}
+			if strings.Contains(out, "dry-run:") {
+				t.Fatalf("env DRY_RUN must be ignored:\n%s", out)
+			}
+			calls := h.calls()
+			if !strings.Contains(calls, "pull ") {
+				t.Fatalf("env DRY_RUN without --dry-run must still pull; calls:\n%s", calls)
+			}
+			ents, _ := os.ReadDir(filepath.Join(h.state, "c"))
+			if len(ents) != 1 || ents[0].Name() == "old1" {
+				t.Fatalf("container was not recreated: %v", ents)
+			}
+			lf := h.logFile()
+			if !strings.Contains(lf, "dry_run=0") || !strings.Contains(lf, "result=done found=1 updated=1") {
+				t.Fatalf("log should record a real run:\n%s", lf)
+			}
+		})
+		t.Run(sh+"/flag-wins", func(t *testing.T) {
+			h := newStubHost(t)
+			h.addContainer("old1", "jarnis-honeypot", "sha256:old", true)
+			code, out := h.runWith(sh, []string{"--dry-run"}, "DRY_RUN=0", "UPDATE_TRIGGER=manual")
+			if code != 0 || !strings.Contains(out, "dry-run: would recreate jarnis-honeypot") {
+				t.Fatalf("code=%d\n%s", code, out)
+			}
+			calls := "\n" + h.calls()
+			if strings.Contains(calls, "\npull ") {
+				t.Fatalf("--dry-run must still inspect only; calls:%s", calls)
+			}
+		})
+	}
+}
