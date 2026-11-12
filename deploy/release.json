@@ -1,12 +1,12 @@
 {
-  "version": "ad4eb0947402",
+  "version": "984296136409",
   "tags": [
-    "ad4eb0947402",
+    "984296136409",
     "v1.0-hostinger",
     "v1.0"
   ],
   "source": "dockerhub",
   "image": "jarnis/honeypot:latest",
-  "commit": "ad4eb0947402f51952cd3f5c2a43c9706a44bcd8",
-  "updated_at": "2026-11-11T16:50:54Z"
+  "commit": "98429613640973b791117acfd5afe4a5da7ef250",
+  "updated_at": "2026-11-12T04:29:25Z"
 }
